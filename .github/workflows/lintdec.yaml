@@ -35,32 +35,27 @@ jobs:
       - if: github.event_name == 'pull_request'
         run: go run ./tools/sloplint diff origin/${{ github.base_ref }}
 
-  # Each green push to main publishes the CLI, pinned by commit under a single `latest` release.
-  release:
+  # Each green push to main cuts the next patch tag; release.yaml runs goreleaser on it.
+  tag:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [check]
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-      - name: Build
+      - name: Bump patch version and tag
         run: |
-          GOOS=linux GOARCH=amd64 CGO_ENABLED=1 go build \
-            -ldflags "-s -w -X main.version=${GITHUB_SHA:0:7}" \
-            -o dist/lintdec .
-      - name: Release
-        run: |
-          ./dist/lintdec version
-          (sha256sum dist/lintdec > dist/lintdec.sha256) < dist/lintdec
-          gh release delete latest --yes >/dev/null 2>&1 || true
-          gh release create latest dist/lintdec dist/lintdec.sha256 \
-            --title "lintdec ${GITHUB_SHA:0:7}" \
-            --notes "commit $GITHUB_SHA"
-          gh release download latest --pattern 'lintdec*' --dir dist/check
-          (cd dist/check && sha256sum -c lintdec.sha256)
-          dist/check/lintdec version
+          last=$(git tag -l 'v*' --sort=-v:refname | head -1)
+          if [ -n "$last" ]; then
+            v=${last#v}
+            next=$(printf 'v%s.%s.%s' "$(echo "$v" | cut -d. -f1)" "$(echo "$v" | cut -d. -f2)" "$(( $(echo "$v" | cut -d. -f3) + 1 ))")
+          else
+            next=v0.1.0
+          fi
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git tag -a "$next" -m "lintdec $next"
+          git push origin "$next"
+          echo "tagged $next"
