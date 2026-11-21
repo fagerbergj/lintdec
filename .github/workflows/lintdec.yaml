@@ -45,8 +45,19 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Tags must be visible, or the bump always restarts at v0.1.0.
+          fetch-tags: true
       - name: Bump patch version and tag
         run: |
+          # The tag carries this run's commit, whose tree predates the tag job's own
+          # workflow files; backport them so the tag push has workflows to run.
+          for f in .github/workflows/release.yaml .goreleaser.yaml; do
+            mkdir -p "$(dirname "$f")"
+            curl -sf "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/refs/heads/main/$f" -o "$f"
+          done
+          git config user.name github-actions
+          git config user.email github-actions@github.com
           last=$(git tag -l 'v*' --sort=-v:refname | head -1)
           if [ -n "$last" ]; then
             v=${last#v}
@@ -54,8 +65,8 @@ jobs:
           else
             next=v0.1.0
           fi
-          git config user.name github-actions
-          git config user.email github-actions@github.com
+          git add .github/workflows/release.yaml .goreleaser.yaml
+          git diff --cached --quiet || git commit -m "cd: backport the release workflow and goreleaser config to this tag"
           git tag -a "$next" -m "lintdec $next"
           git push origin "$next"
           echo "tagged $next"
