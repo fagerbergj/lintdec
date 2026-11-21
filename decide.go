@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -48,29 +49,34 @@ func (e err429) Error() string { return e.msg }
 
 // call asks the model for one batch: every rule in the job against the unit.
 // Rules the model omits get one follow-up call.
-func (c *client) call(j job) (map[string]Verdict, error) {
-	out, missing, err := c.callOnce(j, "")
+func (c *client) call(ctx context.Context, j job) (map[string]Verdict, error) {
+	out, missing, err := c.callOnce(ctx, j, "")
 	if err != nil {
 		return nil, err
 	}
-	// one follow-up pass at most: an unlimited loop would hang on a model
-	// that keeps omitting keys. Rules still omitted get a fresh
-	// single-rule call, which the model handles reliably.
+	// One follow-up pass for omitted rules only; anything still omitted gets a
+	// fresh single-rule call, which models handle reliably.
 	if len(missing) > 0 {
-		fu := "Your previous reply was missing verdicts for: " + strings.Join(missing, ", ") + ". Reply now with exactly one JSON object containing only those rule ids as keys, in the same verdict format."
-		out2, missing2, err := c.callOnce(j, fu)
-		if err != nil {
-			return nil, err
-		}
-		maps.Copy(out, out2)
-		missing = missing2
+		var missRules []Rule
 		for _, id := range missing {
 			r, ok := findRule(id)
 			if !ok {
 				return nil, fmt.Errorf("unknown rule %s", id)
 			}
-			single := job{unit: j.unit, rules: []Rule{r}}
-			out3, missing3, err := c.callOnce(single, "")
+			missRules = append(missRules, r)
+		}
+		fu := "Your previous reply was missing verdicts for: " + strings.Join(missing, ", ") + ". Reply now with exactly one JSON object containing only those rule ids as keys, in the same verdict format."
+		out2, missing2, err := c.callOnce(ctx, job{unit: j.unit, rules: missRules}, fu)
+		if err != nil {
+			return nil, err
+		}
+		maps.Copy(out, out2)
+		for _, id := range missing2 {
+			r, ok := findRule(id)
+			if !ok {
+				return nil, fmt.Errorf("unknown rule %s", id)
+			}
+			out3, missing3, err := c.callOnce(ctx, job{unit: j.unit, rules: []Rule{r}}, "")
 			if err != nil {
 				return nil, err
 			}
@@ -83,7 +89,7 @@ func (c *client) call(j job) (map[string]Verdict, error) {
 	return out, nil
 }
 
-func (c *client) callOnce(j job, followUp string) (map[string]Verdict, []string, error) {
+func (c *client) callOnce(ctx context.Context, j job, followUp string) (map[string]Verdict, []string, error) {
 	var rubric strings.Builder
 	for i, r := range j.rules {
 		fmt.Fprintf(&rubric, "%d. %s — %s\n   CRITERIA: %s\n", i+1, r.ID, r.Summary, r.Rubric)
@@ -109,7 +115,10 @@ func (c *client) callOnce(j job, followUp string) (map[string]Verdict, []string,
 			{"role": "user", "content": sb.String()},
 		},
 	})
-	req, _ := http.NewRequest("POST", strings.TrimRight(c.base, "/")+"/chat/completions", bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(c.base, "/")+"/chat/completions", bytes.NewReader(payload))
+	if err != nil {
+		return nil, nil, err
+	}
 	req.Header.Set("Content-Type", "application/json")
 	if c.apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+c.apiKey)
@@ -245,9 +254,8 @@ func (c *cache) put(k string, v Verdict) {
 }
 
 // runWithRetry calls the model for the batch with up to three attempts.
-// 429s (gateway concurrency limit) get a long backoff; other errors, short.
-// No cache here: callers check and store per-rule entries.
-func runWithRetry(c *client, j job) (map[string]Verdict, error) {
+// 429s (gateway concurrency limit) get a long backoff; ctx cancels immediately.
+func runWithRetry(ctx context.Context, c *client, j job) (map[string]Verdict, error) {
 	var v map[string]Verdict
 	var err error
 	for attempt := range 3 {
@@ -256,10 +264,14 @@ func runWithRetry(c *client, j job) (map[string]Verdict, error) {
 			if _, ok := err.(err429); ok {
 				wait = time.Duration(attempt) * 6 * time.Second
 			}
-			time.Sleep(wait)
+			select {
+			case <-time.After(wait):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
 		}
-		v, err = c.call(j)
-		if err == nil {
+		v, err = c.call(ctx, j)
+		if err == nil || ctx.Err() != nil {
 			break
 		}
 	}

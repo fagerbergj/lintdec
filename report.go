@@ -24,8 +24,10 @@ func severityRank(s string) int {
 		return 2
 	case "med":
 		return 1
-	default:
+	case "low":
 		return 0
+	default:
+		return -1
 	}
 }
 
