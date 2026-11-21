@@ -236,7 +236,7 @@ func providerAdd(c *Config, rest []string) int {
 	if c.Active == name {
 		suffix = " (active)"
 	}
-	fmt.Printf("added %s%s — run 'lintdec model pick %s' to choose a model\n", name, suffix, name)
+	fmt.Printf("added %s%s — run 'lintdec model %s' to choose a model\n", name, suffix, name)
 	return 0
 }
 

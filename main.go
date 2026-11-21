@@ -25,9 +25,12 @@ func main() {
 	switch args[0] {
 	case "-h", "--help", "help":
 		usage()
+		return
 	case "version", "-v", "--version":
 		fmt.Println("lintdec " + version)
 		return
+	case "update":
+		os.Exit(updateCmd())
 	case "--list-rules":
 		for _, r := range rules {
 			fmt.Printf("%-24s %s\n", r.ID, r.Summary)
@@ -43,7 +46,8 @@ func usage() {
 Usage:
   lintdec [flags] <path>...        lint files, dirs, or glob patterns (default: .)
   lintdec provider [list|add|use|rm|test] ...
-  lintdec model [list|pick|use|add|rm] ...
+  lintdec model [provider|list|use|add|rm] ...
+  lintdec update                   download and install the latest release
   lintdec --list-rules             list rule ids
   lintdec -h                       this help
 

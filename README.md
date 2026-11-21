@@ -24,7 +24,8 @@ lintdec provider add
 # api key (blank if none):
 # test the connection now? [y]:
 
-lintdec model pick clef            # interactive picker (fetches /models, supports filter)
+lintdec model clef                 # interactive picker (fetches /models, supports filter)
+lintdec model                      # pick from saved models across providers
 lintdec model add openrouter anthropic/claude-sonnet-4 google/gemini-2.5-pro
 lintdec model use google/gemini-2.5-pro
 ```
