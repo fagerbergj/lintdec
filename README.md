@@ -15,15 +15,21 @@ cgo + a C compiler are required to build (the tree-sitter grammars compile C at 
 
 ## First run
 
-Add a provider once (wizard):
+Add a provider (endpoint + credentials), then pick a model (1:N providers to models):
 
 ```sh
 lintdec provider add
 # name [local]: clef
 # base URL [http://localhost:11434/v1]: http://127.0.0.1:11436/v1
-# model id: qwen3.8-27b
+# api key (blank if none):
 # test the connection now? [y]:
+
+lintdec model pick clef            # interactive picker (fetches /models, supports filter)
+lintdec model add openrouter anthropic/claude-sonnet-4 google/gemini-2.5-pro
+lintdec model use google/gemini-2.5-pro
 ```
+
+When `--model <id>` is passed without `--provider`, `lintdec` picks the unique provider that lists that model (or falls back to the active provider).
 
 Then lint:
 
