@@ -63,8 +63,9 @@ func any(findings []finding, substr string) bool {
 
 func TestComplexityFlagsOverThreshold(t *testing.T) {
 	dir := writeTree(t)
-	src, _ := os.ReadFile(filepath.Join(dir, "a.go"))
-	got := lintSource(filepath.Join(dir, "a.go"), src, nil)
+	aPath := filepath.Join(dir, "a.go")
+	src, _ := os.ReadFile(aPath)
+	got := lintSource(aPath, src, nil)
 	if !any(got, "4-line comment run") {
 		t.Errorf("expected the 4-line comment run to be flagged, got: %v", got)
 	}
@@ -77,18 +78,35 @@ func TestComplexityFlagsOverThreshold(t *testing.T) {
 	if any(got, "C CC") {
 		t.Errorf("C (CC 2) must not be flagged: %v", got)
 	}
+	for _, f := range got {
+		if f.file != aPath {
+			t.Errorf("finding file = %q, want %q", f.file, aPath)
+		}
+	}
+}
+
+func TestNestedClosureDoesNotInflateParentCC(t *testing.T) {
+	src := "package p\n\nfunc Outer(x int) int {\n\tfn := func(y int) int {\n" +
+		strings.TrimPrefix(ladderSrc("inner", 17), "func inner(x int) int {\n") +
+		"\treturn fn(x)\n}\n"
+	got := lintSource("outer.go", []byte(src), nil)
+	if any(got, "Outer CC") {
+		t.Errorf("nested closure should not inflate Outer's CC: %v", got)
+	}
 }
 
 func TestClonesMatchAcrossFiles(t *testing.T) {
-	dir := writeTree(t)
-	a := filepath.Join(dir, "a.go")
-	b := filepath.Join(dir, "b.go")
-	srcA, _ := os.ReadFile(a)
-	srcB, _ := os.ReadFile(b)
-	tree := map[string][]byte{a: srcA, b: srcB}
-	got := clones(tree, map[string][]span{a: nil, b: nil})
-	if len(got) == 0 {
-		t.Fatal("expected at least one clone between a.go and b.go")
+	// z.go is untouched and has different leading tokens than a.go so a per-file
+	// vocab would assign different token IDs; a.go is touched and copies z.go's ladder.
+	zSrc := "package p\n\nfunc preamble() string { return \"unique\" }\n\n" + ladderSrc("Orig", 20)
+	aSrc := "package p\n\n" + ladderSrc("Copy", 20)
+	tree := map[string][]byte{"a.go": []byte(aSrc), "z.go": []byte(zSrc)}
+	got := clones(tree, map[string][]span{"a.go": {{1, 80}}})
+	if len(got) != 1 {
+		t.Fatalf("want 1 deduplicated clone finding, got %d: %v", len(got), got)
+	}
+	if got[0].file != "a.go" || !strings.Contains(got[0].message, "z.go:") {
+		t.Errorf("unexpected clone finding: %+v", got[0])
 	}
 }
 

@@ -146,14 +146,14 @@ func lintSource(rel string, src []byte, rs []span) []finding {
 		return nil
 	}
 	var out []finding
-	out = append(out, commentRunFindings(fset, f, rs)...)
-	out = append(out, complexFindings(fset, f, src, rs)...)
+	out = append(out, commentRunFindings(rel, fset, f, rs)...)
+	out = append(out, complexFindings(rel, fset, f, src, rs)...)
 	return out
 }
 
 // Consecutive comment lines: a comment group covers the lines it physically spans, and a run
 // longer than the limit that touches changed lines is a finding.
-func commentRunFindings(fset *token.FileSet, f *ast.File, rs []span) []finding {
+func commentRunFindings(rel string, fset *token.FileSet, f *ast.File, rs []span) []finding {
 	n := fset.File(f.Pos()).LineCount()
 	isComment := make([]bool, n+1)
 	for _, g := range f.Comments {
@@ -175,7 +175,7 @@ func commentRunFindings(fset *token.FileSet, f *ast.File, rs []span) []finding {
 			e++
 		}
 		if e-l+1 > maxCommentRun && (rs == nil || overlaps(l, e, rs)) {
-			out = append(out, finding{file: f.Name.Name, line: l, message: fmt.Sprintf("%d-line comment run touches changed lines", e-l+1)})
+			out = append(out, finding{file: rel, line: l, message: fmt.Sprintf("%d-line comment run touches changed lines", e-l+1)})
 		}
 		l = e + 1
 	}
@@ -183,7 +183,7 @@ func commentRunFindings(fset *token.FileSet, f *ast.File, rs []span) []finding {
 }
 
 // Cyclomatic complexity of one function body: 1 per decision point (if, for, range, case,
-// comm, &&, ||); a nested function counts its own body separately.
+// comm, &&, ||); nested closures do not inflate their enclosing function.
 func complexity(body *ast.BlockStmt) int {
 	cc := 1
 	ast.Walk(&ccVisitor{cc: &cc}, body)
@@ -195,10 +195,7 @@ type ccVisitor struct{ cc *int }
 func (v *ccVisitor) Visit(n ast.Node) ast.Visitor {
 	switch s := n.(type) {
 	case *ast.FuncLit:
-		// A nested function counts as a fresh complexity-1 unit; its own decisions are
-		// reached by the walk descending into it.
-		*v.cc++
-		return v
+		return nil
 	case *ast.IfStmt:
 		*v.cc++
 	case *ast.ForStmt, *ast.RangeStmt:
@@ -233,7 +230,7 @@ func ccAllowed(src []byte, topLine int) bool {
 	return false
 }
 
-func complexFindings(fset *token.FileSet, f *ast.File, src []byte, rs []span) []finding {
+func complexFindings(rel string, fset *token.FileSet, f *ast.File, src []byte, rs []span) []finding {
 	var out []finding
 	ast.Inspect(f, func(n ast.Node) bool {
 		fn, ok := n.(*ast.FuncDecl)
@@ -244,7 +241,7 @@ func complexFindings(fset *token.FileSet, f *ast.File, src []byte, rs []span) []
 		e := fset.Position(fn.End()).Line
 		cc := complexity(fn.Body)
 		if cc > maxCC && !ccAllowed(src, fset.Position(fn.Pos()).Line) && (rs == nil || overlaps(s, e, rs)) {
-			out = append(out, finding{file: f.Name.Name, line: s, message: fmt.Sprintf("%s CC %d > %d (changed)", fn.Name.Name, cc, maxCC)})
+			out = append(out, finding{file: rel, line: s, message: fmt.Sprintf("%s CC %d > %d (changed)", fn.Name.Name, cc, maxCC)})
 		}
 		return true
 	})
@@ -258,16 +255,14 @@ type tok struct {
 	line int
 }
 
-func tokens(fset *token.FileSet, f *ast.File) []tok {
-	vocab := map[string]uint64{}
-	next := uint64(1)
+func tokens(fset *token.FileSet, f *ast.File, vocab map[string]uint64) []tok {
 	key := func(k string) uint64 {
 		if v, ok := vocab[k]; ok {
 			return v
 		}
-		vocab[k] = next
-		next++
-		return next - 1
+		v := uint64(len(vocab) + 1)
+		vocab[k] = v
+		return v
 	}
 	var out []tok
 	appendTok := func(k string, pos token.Pos) {
@@ -320,29 +315,28 @@ func windowKey(toks []tok, at int) [2]uint64 {
 		}
 		a.Write(buf[:])
 		for j := 0; j < 8; j++ {
-			buf[j] = byte(toks[i].id + 0x9e3779b9 >> (8 * j))
+			buf[j] = byte((toks[i].id + 0x9e3779b9) >> (8 * j))
 		}
 		b.Write(buf[:])
 	}
 	return [2]uint64{a.Sum64(), b.Sum64()}
 }
 
-// Exact token-window matches among the files the diff touches; each reported once, at the
-// later occurrence.
+// Exact token-window matches across the tree; untouched files are indexed first so a
+// touched file copying an untouched file is caught regardless of path order.
 func clones(tree map[string][]byte, touched map[string][]span) []finding {
-	files := []string{}
-	for f := range touched {
-		if _, ok := tree[f]; ok {
-			files = append(files, f)
+	var untouched, changed []string
+	for f := range tree {
+		if _, ok := touched[f]; ok {
+			changed = append(changed, f)
+		} else {
+			untouched = append(untouched, f)
 		}
 	}
-	sort.Strings(files)
-	type loc struct {
-		fileIdx int
-		line    int
-	}
-	first := map[[2]uint64]loc{}
-	var out []finding
+	sort.Strings(untouched)
+	sort.Strings(changed)
+	files := append(untouched, changed...)
+	vocab := map[string]uint64{}
 	parsed := make([][]tok, len(files))
 	for i, rel := range files {
 		fset := token.NewFileSet()
@@ -350,22 +344,33 @@ func clones(tree map[string][]byte, touched map[string][]span) []finding {
 		if err != nil {
 			continue
 		}
-		parsed[i] = tokens(fset, f)
+		parsed[i] = tokens(fset, f, vocab)
 	}
-	report := func(fileIdx, line, otherFileIdx, otherLine, endLine int) {
-		out = append(out, finding{
-			file: files[fileIdx], line: line,
-			message: fmt.Sprintf("lines %d-%d duplicate %s:%d (%d+ tokens)", line, endLine, files[otherFileIdx], otherLine, minTokens),
-		})
+	type loc struct {
+		fileIdx int
+		line    int
 	}
-	for i := range files {
+	first := map[[2]uint64]loc{}
+	var out []finding
+	for i, rel := range files {
 		toks := parsed[i]
+		rs, isTouched := touched[rel]
+		inRun := false
 		for at := 0; at+minTokens <= len(toks); at++ {
 			k := windowKey(toks, at)
-			if prior, ok := first[k]; ok {
-				report(i, toks[at].line, prior.fileIdx, prior.line, toks[at+minTokens-1].line)
-			} else {
+			prior, seen := first[k]
+			if !seen {
 				first[k] = loc{fileIdx: i, line: toks[at].line}
+				inRun = false
+				continue
+			}
+			s, e := toks[at].line, toks[at+minTokens-1].line
+			if !inRun && isTouched && (rs == nil || overlaps(s, e, rs)) {
+				out = append(out, finding{
+					file: rel, line: s,
+					message: fmt.Sprintf("lines %d-%d duplicate %s:%d (%d+ tokens)", s, e, files[prior.fileIdx], prior.line, minTokens),
+				})
+				inRun = true
 			}
 		}
 	}
