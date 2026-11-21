@@ -270,39 +270,66 @@ func resolveRules(fRules string, pc ProjectConfig) ([]Rule, error) {
 	return slices.DeleteFunc(active, func(r Rule) bool { return slices.Contains(pc.RulesOff, r.ID) }), nil
 }
 
-func resolveProvider(o lintOpts, pc ProjectConfig) (Provider, error) {
-	var prov Provider
+type endpoint struct {
+	BaseURL string
+	Model   string
+	APIKey  string
+}
+
+func pickProvider(cfg Config, wantProv, wantModel string) (string, Provider, error) {
+	if wantProv != "" {
+		p, ok := cfg.Providers[wantProv]
+		if !ok {
+			return "", Provider{}, fmt.Errorf("no such provider: %s", wantProv)
+		}
+		return wantProv, p, nil
+	}
+	if wantModel != "" {
+		if owner, op, ok := cfg.findProviderForModel(wantModel); ok {
+			return owner, op, nil
+		}
+	}
+	if cfg.Active == "" {
+		return "", Provider{}, fmt.Errorf("no provider configured; run: lintdec provider add")
+	}
+	p, ok := cfg.Providers[cfg.Active]
+	if !ok {
+		return "", Provider{}, fmt.Errorf("no such provider: %s", cfg.Active)
+	}
+	return cfg.Active, p, nil
+}
+
+func resolveProvider(o lintOpts, pc ProjectConfig) (endpoint, error) {
+	wantModel := firstNonEmpty(o.model, os.Getenv("LINTDEC_MODEL"), pc.Model)
+	wantProv := firstNonEmpty(o.provider, os.Getenv("LINTDEC_PROVIDER"), pc.Provider)
+	var ep endpoint
 	if o.baseURL != "" {
-		prov = Provider{BaseURL: strings.TrimRight(o.baseURL, "/"), Model: o.model, APIKey: o.apiKey}
+		ep = endpoint{BaseURL: strings.TrimRight(o.baseURL, "/"), Model: wantModel, APIKey: o.apiKey}
 	} else {
-		name := firstNonEmpty(o.provider, os.Getenv("LINTDEC_PROVIDER"), pc.Provider)
 		cfg, err := loadConfig()
 		if err != nil {
-			return prov, err
+			return ep, err
 		}
-		name = firstNonEmpty(name, cfg.Active)
-		if name == "" {
-			return prov, fmt.Errorf("no provider configured; run: lintdec provider add")
+		name, p, err := pickProvider(cfg, wantProv, wantModel)
+		if err != nil {
+			return ep, err
 		}
-		p, ok := cfg.Providers[name]
-		if !ok {
-			return prov, fmt.Errorf("no such provider: %s", name)
+		ep = endpoint{
+			BaseURL: strings.TrimRight(p.BaseURL, "/"),
+			Model:   firstNonEmpty(wantModel, cfg.activeModelFor(name, p)),
+			APIKey:  firstNonEmpty(o.apiKey, p.APIKey),
 		}
-		prov = p
 	}
 	if e := os.Getenv("LINTDEC_BASE_URL"); e != "" && o.baseURL == "" {
-		prov.BaseURL = strings.TrimRight(e, "/")
-	}
-	if o.model == "" {
-		prov.Model = firstNonEmpty(os.Getenv("LINTDEC_MODEL"), pc.Model, prov.Model)
+		ep.BaseURL = strings.TrimRight(e, "/")
 	}
 	if o.apiKey == "" {
-		prov.APIKey = firstNonEmpty(os.Getenv("LINTDEC_API_KEY"), prov.APIKey)
+		ep.APIKey = firstNonEmpty(os.Getenv("LINTDEC_API_KEY"), ep.APIKey)
 	}
-	if prov.BaseURL == "" || prov.Model == "" {
-		return prov, fmt.Errorf("provider incomplete (need baseUrl and model); run: lintdec provider add")
+	if ep.BaseURL == "" || ep.Model == "" {
+		return ep, fmt.Errorf("provider incomplete (need baseUrl and model); run: lintdec model pick")
 	}
-	return prov, nil
+	return ep, nil
 }
 
 func firstNonEmpty(vals ...string) string {

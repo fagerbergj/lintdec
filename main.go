@@ -13,6 +13,9 @@ func main() {
 	if len(args) > 0 && (args[0] == "provider" || args[0] == "providers") {
 		os.Exit(providerCmd(args[1:]))
 	}
+	if len(args) > 0 && (args[0] == "model" || args[0] == "models") {
+		os.Exit(modelCmd(args[1:]))
+	}
 	if len(args) > 0 && args[0] == "lint" {
 		args = args[1:]
 	}
@@ -39,7 +42,8 @@ func usage() {
 
 Usage:
   lintdec [flags] <path>...        lint files, dirs, or glob patterns (default: .)
-  lintdec provider [add|use|rm|test] [name]
+  lintdec provider [list|add|use|rm|test] ...
+  lintdec model [list|pick|use|add|rm] ...
   lintdec --list-rules             list rule ids
   lintdec -h                       this help
 
