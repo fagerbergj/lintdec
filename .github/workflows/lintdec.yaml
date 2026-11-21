@@ -22,7 +22,7 @@ jobs:
       - run: go test ./tools/sloplint -coverprofile=cover-sloplint.out
       # Floor set from the first measured run (2026-11-21: 10.5% / 63.7%); raise as tests land.
       - run: |
-          total() { go tool cover -func="$1" | awk '/^total:/{print $2}' | tr -d '%'; }
+          total() { go tool cover -func="$1" | awk '/^total:/{print $3}' | tr -d '%'; }
           root=$(total cover-root.out)
           slop=$(total cover-sloplint.out)
           echo "coverage: root ${root}%  sloplint ${slop}%"
