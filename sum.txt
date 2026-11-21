@@ -1,6 +1,0 @@
-lintdec: 11 files → 114 units, 81 checks · rules: 3 · model: qwen3.8-27b
-[ 25%] 21/81 · 882092.6/min · eta 0s · 21 cached
-[ 50%] 41/81 · 131.8/min · eta 18s · 36 cached
-[ 75%] 61/81 · 2659.7/min · eta 0s · 46 cached
-[100%] 81/81 · 162.4/min · eta — · 63 cached
-done: 81/81 checks · 11 findings · 63 cached · 0 errors · 0 ignored-inline · 0 skipped · 0 below-severity · 4s · exit 1
