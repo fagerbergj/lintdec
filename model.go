@@ -19,15 +19,13 @@ func modelCmd(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	sub, rest := "list", []string{}
-	if len(args) > 0 {
-		sub, rest = args[0], args[1:]
+	if len(args) == 0 {
+		return modelPick(&c, nil)
 	}
+	sub, rest := args[0], args[1:]
 	switch sub {
-	case "list", "":
+	case "list":
 		return modelList(c)
-	case "pick":
-		return modelPick(&c, rest)
 	case "use":
 		return modelUse(&c, rest)
 	case "add":
@@ -35,7 +33,10 @@ func modelCmd(args []string) int {
 	case "rm":
 		return modelRm(&c, rest)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown subcommand: %s (list|pick|use|add|rm)\n", sub)
+		if _, ok := c.Providers[sub]; ok {
+			return modelPick(&c, []string{sub})
+		}
+		fmt.Fprintf(os.Stderr, "unknown subcommand or provider: %s (list|use|add|rm|<provider>)\n", sub)
 		return 2
 	}
 }
@@ -43,7 +44,7 @@ func modelCmd(args []string) int {
 func modelList(c Config) int {
 	choices := savedModelChoices(c)
 	if len(choices) == 0 {
-		fmt.Println("no models configured; run: lintdec model pick")
+		fmt.Println("no models configured; run: lintdec model")
 		return 0
 	}
 	for _, ch := range choices {

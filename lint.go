@@ -327,7 +327,7 @@ func resolveProvider(o lintOpts, pc ProjectConfig) (endpoint, error) {
 		ep.APIKey = firstNonEmpty(os.Getenv("LINTDEC_API_KEY"), ep.APIKey)
 	}
 	if ep.BaseURL == "" || ep.Model == "" {
-		return ep, fmt.Errorf("provider incomplete (need baseUrl and model); run: lintdec model pick")
+		return ep, fmt.Errorf("provider incomplete (need baseUrl and model); run: lintdec model")
 	}
 	return ep, nil
 }

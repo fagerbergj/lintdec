@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -101,8 +103,8 @@ func TestModelPickerAndProviderResolution(t *testing.T) {
 	orig := stdinReader
 	defer func() { stdinReader = orig }()
 	stdinReader = bufio.NewReader(strings.NewReader("2\n"))
-	if code := modelCmd([]string{"pick", "openrouter"}); code != 0 {
-		t.Fatalf("model pick exited %d", code)
+	if code := modelCmd([]string{"openrouter"}); code != 0 {
+		t.Fatalf("model openrouter exited %d", code)
 	}
 
 	ep, err := resolveProvider(lintOpts{}, ProjectConfig{})
@@ -120,6 +122,43 @@ func TestModelPickerAndProviderResolution(t *testing.T) {
 	}
 	if ep2.BaseURL != "http://127.0.0.1:11436/v1" || ep2.Model != "qwen3.8-27b" {
 		t.Errorf("--model auto-provider endpoint = %+v", ep2)
+	}
+}
+
+func TestSelfUpdateVerifiesChecksumAndReplaces(t *testing.T) {
+	payload := []byte("#!/bin/sh\necho new-binary\n")
+	sum := sha256.Sum256(payload)
+	wantHex := hex.EncodeToString(sum[:])
+
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/latest":
+			json.NewEncoder(w).Encode(map[string]any{
+				"tag_name": "v9.9.9",
+				"assets": []map[string]string{
+					{"name": "lintdec_linux_amd64", "browser_download_url": srv.URL + "/bin"},
+					{"name": "checksums.txt", "browser_download_url": srv.URL + "/sums"},
+				},
+			})
+		case "/sums":
+			w.Write([]byte(wantHex + "  lintdec_linux_amd64\n"))
+		case "/bin":
+			w.Write(payload)
+		}
+	}))
+	defer srv.Close()
+
+	exe := filepath.Join(t.TempDir(), "lintdec")
+	if err := os.WriteFile(exe, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := selfUpdate(exe, srv.URL+"/latest", "linux", "amd64"); err != nil {
+		t.Fatalf("selfUpdate failed: %v", err)
+	}
+	got, _ := os.ReadFile(exe)
+	if string(got) != string(payload) {
+		t.Errorf("binary not replaced: got %q", got)
 	}
 }
 
