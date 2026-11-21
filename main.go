@@ -5,6 +5,9 @@ import (
 	"os"
 )
 
+// Set by CI with -ldflags "-X main.version=<sha>"; the release job pins each build by commit.
+var version = "dev"
+
 func main() {
 	args := os.Args[1:]
 	if len(args) > 0 && (args[0] == "provider" || args[0] == "providers") {
@@ -20,7 +23,7 @@ func main() {
 	case "-h", "--help", "help":
 		usage()
 	case "version", "-v", "--version":
-		fmt.Println("lintdec 0.1.0")
+		fmt.Println("lintdec " + version)
 		return
 	case "--list-rules":
 		for _, r := range rules {

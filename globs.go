@@ -6,9 +6,8 @@ import (
 	"strings"
 )
 
-// matchGlob matches a slash-separated relative path against a pattern.
-// '**' spans any number of path segments, '*' and '?' match within a segment,
-// and top-level '{a,b}' gives alternation.
+// matchGlob matches a slash-separated relative path against a pattern: '**' spans path
+// segments, '*' and '?' match within one, top-level '{a,b}' alternates.
 func matchGlob(pattern, p string) bool {
 	patterns := []string{pattern}
 	if s, _, ok := strings.Cut(pattern, "{"); ok {
@@ -51,8 +50,8 @@ func segMatch(pat, pathSegs []string) bool {
 	return len(pathSegs) == 0
 }
 
-// matchAnyGlob matches p against any pattern, trying both the full relative
-// path and the basename, so "*.go" and "**/legacy/**" both feel natural.
+// matchAnyGlob matches p against any pattern, trying both the full relative path and the
+// basename, so "*.go" and "**/legacy/**" both feel natural.
 func matchAnyGlob(patterns []string, p string) bool {
 	base := filepath.Base(p)
 	for _, g := range patterns {
