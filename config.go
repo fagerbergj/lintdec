@@ -181,6 +181,87 @@ func providerAdd(c *Config, rest []string) int {
 	return 0
 }
 
+func providerList(c Config) int {
+	if len(c.Providers) == 0 {
+		fmt.Println("no providers configured; add one: lintdec provider add")
+		return 0
+	}
+	names := make([]string, 0, len(c.Providers))
+	for n := range c.Providers {
+		names = append(names, n)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		p := c.Providers[name]
+		mark := " "
+		if name == c.Active {
+			mark = "*"
+		}
+		fmt.Printf("%s %-12s %-32s model %s\n", mark, name, p.BaseURL, p.Model)
+	}
+	return 0
+}
+
+func providerUse(c *Config, rest []string) int {
+	if len(rest) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: lintdec provider use <name>")
+		return 2
+	}
+	if _, ok := c.Providers[rest[0]]; !ok {
+		fmt.Fprintf(os.Stderr, "no such provider: %s\n", rest[0])
+		return 2
+	}
+	c.Active = rest[0]
+	if err := c.save(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	fmt.Printf("active provider: %s\n", c.Active)
+	return 0
+}
+
+func providerRm(c *Config, rest []string) int {
+	if len(rest) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: lintdec provider rm <name>")
+		return 2
+	}
+	if _, ok := c.Providers[rest[0]]; !ok {
+		fmt.Fprintf(os.Stderr, "no such provider: %s\n", rest[0])
+		return 2
+	}
+	if c.Active == rest[0] && !slices.Contains(rest[1:], "--force") {
+		fmt.Fprintf(os.Stderr, "%s is active; use --force\n", rest[0])
+		return 2
+	}
+	delete(c.Providers, rest[0])
+	if c.Active == rest[0] {
+		c.Active = ""
+	}
+	if err := c.save(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	fmt.Printf("removed %s\n", rest[0])
+	return 0
+}
+
+func providerTest(c Config, rest []string) int {
+	name := c.Active
+	if len(rest) > 0 {
+		name = rest[0]
+	}
+	p, ok := c.Providers[name]
+	if !ok {
+		fmt.Fprintf(os.Stderr, "no such provider: %s\n", name)
+		return 2
+	}
+	if err := testConnection(p); err != nil {
+		fmt.Fprintf(os.Stderr, "connection test failed: %v\n", err)
+		return 2
+	}
+	return 0
+}
+
 func providerCmd(args []string) int {
 	c, err := loadConfig()
 	if err != nil {
@@ -193,81 +274,15 @@ func providerCmd(args []string) int {
 	}
 	switch sub {
 	case "list", "":
-		if len(c.Providers) == 0 {
-			fmt.Println("no providers configured; add one: lintdec provider add")
-			return 0
-		}
-		names := make([]string, 0, len(c.Providers))
-		for n := range c.Providers {
-			names = append(names, n)
-		}
-		slices.Sort(names)
-		for _, name := range names {
-			p := c.Providers[name]
-			mark := " "
-			if name == c.Active {
-				mark = "*"
-			}
-			fmt.Printf("%s %-12s %-32s model %s\n", mark, name, p.BaseURL, p.Model)
-		}
-		return 0
+		return providerList(c)
 	case "add":
 		return providerAdd(&c, rest)
 	case "use":
-		if len(rest) == 0 {
-			fmt.Fprintln(os.Stderr, "usage: lintdec provider use <name>")
-			return 2
-		}
-		if _, ok := c.Providers[rest[0]]; !ok {
-			fmt.Fprintf(os.Stderr, "no such provider: %s\n", rest[0])
-			return 2
-		}
-		c.Active = rest[0]
-		if err := c.save(); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 2
-		}
-		fmt.Printf("active provider: %s\n", c.Active)
-		return 0
+		return providerUse(&c, rest)
 	case "rm":
-		if len(rest) == 0 {
-			fmt.Fprintln(os.Stderr, "usage: lintdec provider rm <name>")
-			return 2
-		}
-		if _, ok := c.Providers[rest[0]]; !ok {
-			fmt.Fprintf(os.Stderr, "no such provider: %s\n", rest[0])
-			return 2
-		}
-		force := slices.Contains(rest[1:], "--force")
-		if c.Active == rest[0] && !force {
-			fmt.Fprintf(os.Stderr, "%s is active; use --force\n", rest[0])
-			return 2
-		}
-		delete(c.Providers, rest[0])
-		if c.Active == rest[0] {
-			c.Active = ""
-		}
-		if err := c.save(); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 2
-		}
-		fmt.Printf("removed %s\n", rest[0])
-		return 0
+		return providerRm(&c, rest)
 	case "test":
-		name := c.Active
-		if len(rest) > 0 {
-			name = rest[0]
-		}
-		p, ok := c.Providers[name]
-		if !ok {
-			fmt.Fprintf(os.Stderr, "no such provider: %s\n", name)
-			return 2
-		}
-		if err := testConnection(p); err != nil {
-			fmt.Fprintf(os.Stderr, "connection test failed: %v\n", err)
-			return 2
-		}
-		return 0
+		return providerTest(c, rest)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown subcommand: %s (list|add|use|rm|test)\n", sub)
 		return 2
