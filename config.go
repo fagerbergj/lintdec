@@ -75,13 +75,16 @@ func ask(v *string, label, def string) string {
 	} else {
 		*v = line
 	}
-	return line
+	return *v
 }
 
 func testConnection(p Provider) error {
 	c := &http.Client{Timeout: 60 * time.Second}
 	base := strings.TrimRight(p.BaseURL, "/")
-	req, _ := http.NewRequest("GET", base+"/models", nil)
+	req, err := http.NewRequest("GET", base+"/models", nil)
+	if err != nil {
+		return err
+	}
 	req.Header.Set("Authorization", "Bearer "+p.APIKey)
 	res, err := c.Do(req)
 	if err != nil {
@@ -113,7 +116,10 @@ func testConnection(p Provider) error {
 		"model": p.Model, "max_tokens": 5, "temperature": 0,
 		"messages": []map[string]string{{"role": "user", "content": "ping"}},
 	})
-	req2, _ := http.NewRequest("POST", base+"/chat/completions", bytes.NewReader(payload))
+	req2, err := http.NewRequest("POST", base+"/chat/completions", bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
 	req2.Header.Set("Content-Type", "application/json")
 	req2.Header.Set("Authorization", "Bearer "+p.APIKey)
 	res2, err := c.Do(req2)
@@ -127,6 +133,52 @@ func testConnection(p Provider) error {
 	}
 	fmt.Printf("connected; completion succeeded\n")
 	return nil
+}
+
+func providerAdd(c *Config, rest []string) int {
+	defName := "local"
+	if len(rest) > 0 {
+		defName = rest[0]
+	}
+	var name string
+	ask(&name, "name", defName)
+	if _, exists := c.Providers[name]; exists {
+		fmt.Fprintf(os.Stderr, "provider %q already exists\n", name)
+		return 2
+	}
+	var p Provider
+	p.BaseURL = strings.TrimRight(ask(&p.BaseURL, "base URL", "http://localhost:11434/v1"), "/")
+	ask(&p.Model, "model id", "")
+	if p.Model == "" {
+		fmt.Fprintln(os.Stderr, "model id is required")
+		return 2
+	}
+	ask(&p.APIKey, "api key (blank if none)", "")
+	var yes string
+	if strings.HasPrefix(strings.ToLower(ask(&yes, "test the connection now?", "y")), "y") {
+		if err := testConnection(p); err != nil {
+			fmt.Fprintf(os.Stderr, "connection test failed: %v\n", err)
+			var k string
+			if !strings.HasPrefix(strings.ToLower(ask(&k, "add it anyway?", "n")), "y") {
+				return 2
+			}
+		}
+	}
+	c.Providers[name] = p
+	var act string
+	if strings.HasPrefix(strings.ToLower(ask(&act, "set as active?", "y")), "y") || c.Active == "" {
+		c.Active = name
+	}
+	if err := c.save(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	suffix := ""
+	if c.Active == name {
+		suffix = " (active)"
+	}
+	fmt.Printf("added %s%s\n", name, suffix)
+	return 0
 }
 
 func providerCmd(args []string) int {
@@ -149,7 +201,7 @@ func providerCmd(args []string) int {
 		for n := range c.Providers {
 			names = append(names, n)
 		}
-		sortStrings(names)
+		slices.Sort(names)
 		for _, name := range names {
 			p := c.Providers[name]
 			mark := " "
@@ -160,53 +212,7 @@ func providerCmd(args []string) int {
 		}
 		return 0
 	case "add":
-		name := ""
-		if len(rest) > 0 {
-			name = rest[0]
-		}
-		name = ask(&name, "name", "local")
-		if _, exists := c.Providers[name]; exists {
-			fmt.Fprintf(os.Stderr, "provider %q already exists\n", name)
-			return 2
-		}
-		var p Provider
-		p.BaseURL = strings.TrimRight(ask(&p.BaseURL, "base URL", "http://localhost:11434/v1"), "/")
-		p.Model = ask(&p.Model, "model id", "")
-		if p.Model == "" {
-			fmt.Fprintln(os.Stderr, "model id is required")
-			return 2
-		}
-		p.APIKey = ask(&p.APIKey, "api key (blank if none)", "")
-		var yes = "y"
-		if ask(&yes, "test the connection now?", "y") == "" {
-			yes = "y"
-		}
-		if strings.HasPrefix(strings.ToLower(yes), "y") {
-			if err := testConnection(p); err != nil {
-				fmt.Fprintf(os.Stderr, "connection test failed: %v\n", err)
-				var k = "n"
-				if !strings.HasPrefix(strings.ToLower(ask(&k, "add it anyway?", "n")), "y") {
-					return 2
-				}
-			}
-		}
-		c.Providers[name] = p
-		var act = "y"
-		if !strings.HasPrefix(strings.ToLower(ask(&act, "set as active?", "y")), "y") && c.Active == "" {
-			c.Active = name
-		} else if strings.HasPrefix(strings.ToLower(act), "y") {
-			c.Active = name
-		}
-		if err := c.save(); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 2
-		}
-		suffix := ""
-		if c.Active == name {
-			suffix = " (active)"
-		}
-		fmt.Printf("added %s%s\n", name, suffix)
-		return 0
+		return providerAdd(&c, rest)
 	case "use":
 		if len(rest) == 0 {
 			fmt.Fprintln(os.Stderr, "usage: lintdec provider use <name>")
@@ -232,12 +238,7 @@ func providerCmd(args []string) int {
 			fmt.Fprintf(os.Stderr, "no such provider: %s\n", rest[0])
 			return 2
 		}
-		force := false
-		for _, a := range args[1:] {
-			if a == "--force" {
-				force = true
-			}
-		}
+		force := slices.Contains(rest[1:], "--force")
 		if c.Active == rest[0] && !force {
 			fmt.Fprintf(os.Stderr, "%s is active; use --force\n", rest[0])
 			return 2
@@ -270,13 +271,5 @@ func providerCmd(args []string) int {
 	default:
 		fmt.Fprintf(os.Stderr, "unknown subcommand: %s (list|add|use|rm|test)\n", sub)
 		return 2
-	}
-}
-
-func sortStrings(s []string) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j] < s[j-1]; j-- {
-			s[j], s[j-1] = s[j-1], s[j]
-		}
 	}
 }
