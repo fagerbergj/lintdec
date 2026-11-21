@@ -99,13 +99,13 @@ var tsExt = map[string]string{
 
 var tsFuncKinds = map[string]bool{
 	"function_declaration": true, "method_definition": true, "function_item": true,
-	"function_definition": true, "constructor_declaration": true, "field_declaration": true,
+	"function_definition": true, "constructor_declaration": true,
 }
 
 func splitTree(path string, src []byte, cfg tsCfg) []Unit {
 	root, err := sitter.ParseCtx(context.Background(), src, cfg.lang())
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "warn: %s: %v (skipped)\n", cfg.name, path)
+		fmt.Fprintf(os.Stderr, "warn: %s (%s): %v (skipped)\n", path, cfg.name, err)
 		return nil
 	}
 	lines := strings.Split(string(src), "\n")
@@ -132,11 +132,10 @@ func splitTree(path string, src []byte, cfg tsCfg) []Unit {
 			c := n.Child(i)
 			t := c.Type()
 			if strings.Contains(t, "comment") {
-				doc, run := docRun(c, src)
+				doc := docRun(c, src)
 				if next := c.NextSibling(); next != nil && isUnitStart(next, cfg, src) &&
 					c.EndPoint().Row+1 == next.StartPoint().Row {
 					docs[c] = doc // attach below, not emitted as a unit
-					markRun(run)
 				} else {
 					units = append(units, Unit{Kind: "Comment", File: path,
 						Start: int(c.StartPoint().Row) + 1, End: int(c.EndPoint().Row) + 1,
@@ -303,7 +302,7 @@ func declName(n *sitter.Node, src []byte) string {
 
 // docRun: maximal run of consecutive comment siblings ending at n (n last),
 // doc markers stripped.
-func docRun(n *sitter.Node, src []byte) (string, []*sitter.Node) {
+func docRun(n *sitter.Node, src []byte) string {
 	run := []*sitter.Node{n}
 	cur := n
 	for {
@@ -311,7 +310,7 @@ func docRun(n *sitter.Node, src []byte) (string, []*sitter.Node) {
 		if prev == nil || !strings.Contains(prev.Type(), "comment") {
 			break
 		}
-		if prev.EndPoint().Row > cur.StartPoint().Row-1 {
+		if cur.StartPoint().Row == 0 || prev.EndPoint().Row+1 < cur.StartPoint().Row {
 			break
 		}
 		run = append([]*sitter.Node{prev}, run...)
@@ -330,15 +329,7 @@ func docRun(n *sitter.Node, src []byte) (string, []*sitter.Node) {
 		b.WriteString(line)
 		b.WriteString("\n")
 	}
-	return strings.TrimSpace(b.String()), run
-}
-
-var docMarks = map[*sitter.Node]bool{}
-
-func markRun(run []*sitter.Node) {
-	for _, c := range run {
-		docMarks[c] = true
-	}
+	return strings.TrimSpace(b.String())
 }
 
 // pythonDocstring: first string literal in a python function body.

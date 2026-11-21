@@ -1,12 +1,8 @@
 package main
 
 import (
-	"context"
 	"strings"
 	"testing"
-
-	sitter "github.com/smacker/go-tree-sitter"
-	"github.com/smacker/go-tree-sitter/typescript/tsx"
 )
 
 const probeSrc = `import { readdirSync } from 'node:fs';
@@ -18,19 +14,6 @@ export function arrowProblem(from: string, to: string): string | undefined {
 type Edge = { from: string; to: string };
 export const process = (a: string) => a.length;
 `
-
-// TestProbeText checks that Content() returns source text, not S-expressions.
-func TestProbeText(t *testing.T) {
-	src := []byte(probeSrc)
-	root, err := sitter.ParseCtx(context.Background(), src, tsx.GetLanguage())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i, count := 0, int(root.ChildCount()); i < count; i++ {
-		c := root.Child(i)
-		t.Logf("%d: type=%s named=%v name=%q text=%.50q", i, c.Type(), c.IsNamed(), declName(c, src), c.Content(src))
-	}
-}
 
 func TestSplitTreeTS(t *testing.T) {
 	units := splitTree("probe.ts", []byte(probeSrc), tsLangs["ts"])
@@ -91,6 +74,38 @@ def helper(x):
 	}
 	if len(byKind["Comment"]) != 1 || !strings.Contains(byKind["Comment"][0].Text, "standalone") {
 		t.Errorf("standalone comment unit wrong: %+v", byKind["Comment"])
+	}
+}
+
+func TestSplitTreeDocGapAndFields(t *testing.T) {
+	tsSrc := `// unrelated header comment
+
+// doc for greet
+export function greet(name: string) {
+  return name;
+}
+`
+	units := splitTree("gap.ts", []byte(tsSrc), tsLangs["ts"])
+	for _, u := range units {
+		if u.Kind == "Function" {
+			if strings.Contains(u.Context, "unrelated") {
+				t.Errorf("blank-line-separated comment leaked into doc context: %q", u.Context)
+			}
+			if !strings.Contains(u.Context, "doc for greet") {
+				t.Errorf("adjacent doc comment missing from context: %q", u.Context)
+			}
+		}
+	}
+
+	javaSrc := `class Box {
+  int width;
+  int height;
+  int area() { return width * height; }
+}
+`
+	jUnits := splitTree("Box.java", []byte(javaSrc), tsLangs["java"])
+	if n := countKind(jUnits, "Function"); n != 0 {
+		t.Errorf("java fields should not be emitted as Function units, got %d", n)
 	}
 }
 

@@ -53,13 +53,14 @@ Lint flags:
   --base-url URL        OpenAI-compatible base URL (overrides provider)
   --model ID            model id (overrides provider)
   --api-key KEY         API key (overrides provider)
-  --workers N           parallel model calls (default 4)
+  --workers N           parallel model calls (default 8)
   --budget N            max model calls this run, 0 = unlimited
   --temperature 0       sampling temperature
-  --no-cache            bypass .lintdec/cache
+  --no-cache            bypass ~/.cache/lintdec/cache
   --no-ignore           report findings despite inline //lintdec:ignore
   --ledger FILE         append findings as JSONL to FILE as they are decided
   --retry-errors        re-run only the checks that errored last run
+  --dump-units          print split units and exit (no model calls)
   --quiet               no progress output
 
 Config: flags > env (LINTDEC_*) > lintdec.yaml (repo) > ~/.config/lintdec/config.json

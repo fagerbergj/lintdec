@@ -25,6 +25,7 @@ type progress struct {
 	last      string
 	ledger    []Finding
 	ledgerN   int // total findings ever (panel tail line)
+	bySev     map[string]int
 	milestone int
 	panelH    int
 }
@@ -35,6 +36,7 @@ func newProgress(total int, quiet bool) *progress {
 		quiet: quiet,
 		total: total,
 		start: time.Now(),
+		bySev: map[string]int{},
 	}
 }
 
@@ -69,7 +71,7 @@ func (p *progress) tick(d time.Duration, cached bool, last string) {
 	}
 	if !p.tty {
 		thresholds := [4]int{25, 50, 75, 100}
-		if p.total > 0 && p.done*100/p.total >= thresholds[p.milestone] && p.milestone < 4 {
+		if p.total > 0 && p.milestone < 4 && p.done*100/p.total >= thresholds[p.milestone] {
 			p.milestone++
 			fmt.Fprintf(os.Stderr, "[%3d%%] %d/%d · %s · eta %s · %d cached\n",
 				thresholds[p.milestone-1], p.done, p.total, p.rate(), p.eta(), p.cached)
@@ -85,15 +87,14 @@ func (p *progress) addFinding(f Finding) {
 	p.mu.Lock()
 	p.ledger = append(p.ledger, f)
 	p.ledgerN++
+	p.bySev[f.Severity]++
 	if len(p.ledger) > 8 {
 		p.ledger = p.ledger[len(p.ledger)-8:]
 	}
-	redraw := p.tty && !p.quiet
-	if redraw {
+	if p.tty && !p.quiet {
 		p.drawBar()
 	}
 	p.mu.Unlock()
-	_ = redraw
 }
 
 // noteSubmit marks a check as in flight (queued at the server or being
@@ -147,16 +148,12 @@ func (p *progress) drawBar() {
 	// findings panel
 	var panel []string
 	if p.ledgerN > 0 {
-		bySev := map[string]int{}
-		for _, f := range p.ledger {
-			bySev[f.Severity]++
-		}
 		panel = append(panel, fmt.Sprintf(" found %d · %d high %d med %d low",
-			p.ledgerN, bySev["high"], bySev["med"], bySev["low"]))
+			p.ledgerN, p.bySev["high"], p.bySev["med"], p.bySev["low"]))
 		recent := p.ledger
 		if len(recent) > 4 {
-			pending := len(recent) - 4
-			recent = recent[4:]
+			pending := p.ledgerN - 4
+			recent = recent[len(recent)-4:]
 			panel = append(panel, fmt.Sprintf(" (%d older — full report at the end)", pending))
 		}
 		for _, f := range recent {
@@ -185,7 +182,7 @@ func (p *progress) finish(nFindings, nErr, nIgnored, nSkipped, nSev, exit int) {
 		if p.panelH > 0 {
 			fmt.Fprintf(os.Stderr, "\033[%dA", p.panelH)
 		}
-		fmt.Fprintf(os.Stderr, "\r\033[K")
+		fmt.Fprintf(os.Stderr, "\r\033[J")
 	}
 	elapsed := time.Since(p.start).Seconds()
 	fmt.Fprintf(os.Stderr, "done: %d/%d checks · %d findings · %d cached · %d errors · %d ignored-inline · %d skipped · %d below-severity · %s · exit %d\n",

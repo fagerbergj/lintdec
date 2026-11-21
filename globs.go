@@ -10,12 +10,12 @@ import (
 // segments, '*' and '?' match within one, top-level '{a,b}' alternates.
 func matchGlob(pattern, p string) bool {
 	patterns := []string{pattern}
-	if s, _, ok := strings.Cut(pattern, "{"); ok {
-		if end := strings.Index(s, "}"); end >= 0 {
-			rest := s[end+1:]
+	if before, after, ok := strings.Cut(pattern, "{"); ok {
+		if end := strings.Index(after, "}"); end >= 0 {
+			rest := after[end+1:]
 			var out []string
-			for _, alt := range strings.Split(s[:end], ",") {
-				out = append(out, alt+rest)
+			for _, alt := range strings.Split(after[:end], ",") {
+				out = append(out, before+alt+rest)
 			}
 			patterns = out
 		}
