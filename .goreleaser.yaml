@@ -1,0 +1,33 @@
+version: 2
+project_name: lintdec
+
+# Releases are tag-gated (vX.Y.Z); the check workflow tags main on every green merge.
+builds:
+  - id: lintdec
+    main: .
+    goos:
+      - linux
+    goarch:
+      - amd64
+    flags:
+      - -trimpath
+    env:
+      - CGO_ENABLED=1
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+# One bare binary, installed straight into PATH; no tarball ceremony.
+archives:
+  - format: binary
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
