@@ -1,0 +1,33 @@
+name: lintdec
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+# Each job's timeout is about three times its slowest recent success, so a hung step fails in minutes.
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      # tree-sitter is cgo; the runner ships gcc, so no extra install.
+      - run: go vet ./...
+      - run: go test ./... -coverprofile=cover-root.out
+      - run: go test ./tools/sloplint -coverprofile=cover-sloplint.out
+      # Floor set from the first measured run (2026-11-21: 10.5% / 63.7%); raise as tests land.
+      - run: |
+          total() { go tool cover -func="$1" | awk '/^total:/{print $2}' | tr -d '%'; }
+          root=$(total cover-root.out)
+          slop=$(total cover-sloplint.out)
+          echo "coverage: root ${root}%  sloplint ${slop}%"
+          awk -v t="$root" 'BEGIN{exit !(t+0 >= 10)}'
+          awk -v t="$slop" 'BEGIN{exit !(t+0 >= 60)}'
+      # Gates only lines this change touches.
+      - if: github.event_name == 'pull_request'
+        run: go run ./tools/sloplint diff origin/${{ github.base_ref }}

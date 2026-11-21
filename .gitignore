@@ -1,0 +1,6 @@
+/lintdec
+/sloplint
+coverage.out
+cover-root.out
+cover-sloplint.out
+.lintdec/
