@@ -84,77 +84,75 @@ func commonAncestor(a, b string) (string, bool) {
 	return strings.Join(aSegs[:i], "/"), true
 }
 
+// defaultInclude returns globs for every language splitFile understands.
+func defaultInclude() []string {
+	out := make([]string, 0, len(tsExt)+3)
+	out = append(out, "*.go", "*.md", "*.markdown")
+	for ext := range tsExt {
+		out = append(out, "*"+ext)
+	}
+	slices.Sort(out)
+	return out
+}
+
+func walkRoot(root string, fn func(string)) {
+	filepath.WalkDir(root, func(p string, d iofs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if p != root && skipDirs[filepath.Base(p)] {
+				return filepath.SkipDir
+			}
+			if isWorktree(p) {
+				fmt.Fprintf(os.Stderr, "skip: %s is a git worktree of another checkout (pass specific files to lint it)\n", p)
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		fn(p)
+		return nil
+	})
+}
+
 // collectFiles turns positional args (files, dirs, or glob patterns) into a
 // file list. Explicitly named files bypass include/exclude.
 func collectFiles(paths, include, exclude []string) ([]string, error) {
 	seen := map[string]bool{}
 	var out []string
 	add := func(p string, explicit bool) {
-		p = filepath.ToSlash(p)
-		if rel, err := filepath.Rel(".", p); err == nil {
-			p = rel
-		}
-		if strings.HasPrefix(p, "..") {
-			return
+		p = filepath.ToSlash(filepath.Clean(p))
+		if rel, err := filepath.Rel(".", p); err == nil && !strings.HasPrefix(rel, "..") {
+			p = filepath.ToSlash(rel)
 		}
 		st, err := os.Stat(p)
 		if err != nil || st.IsDir() {
 			return
 		}
-		if !explicit {
-			if matchAnyGlob(exclude, p) {
-				return
-			}
-			if len(include) > 0 && !matchAnyGlob(include, p) {
-				return
-			}
+		if !explicit && (matchAnyGlob(exclude, p) || (len(include) > 0 && !matchAnyGlob(include, p))) {
+			return
 		}
 		if st.Size() > 1<<20 {
 			fmt.Fprintf(os.Stderr, "warn: %s: over 1MB, skipped\n", p)
 			return
 		}
-		if seen[p] {
-			return
+		if !seen[p] {
+			seen[p] = true
+			out = append(out, p)
 		}
-		seen[p] = true
-		out = append(out, p)
-	}
-	walk := func(root string, fn func(string)) {
-		filepath.WalkDir(root, func(p string, d iofs.DirEntry, err error) error {
-			if err != nil {
-				return nil
-			}
-			if d.IsDir() {
-				if p != root && skipDirs[filepath.Base(p)] {
-					return filepath.SkipDir
-				}
-				if isWorktree(p) {
-					fmt.Fprintf(os.Stderr, "skip: %s is a git worktree of another checkout (pass specific files to lint it)\n", p)
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			fn(p)
-			return nil
-		})
 	}
 	for _, raw := range paths {
-		st, err := os.Stat(raw)
-		if err == nil && !st.IsDir() {
-			add(raw, true)
-			continue
-		}
-		if err == nil {
-			walk(raw, func(p string) { add(p, false) })
+		if st, err := os.Stat(raw); err == nil {
+			if !st.IsDir() {
+				add(raw, true)
+			} else {
+				walkRoot(raw, func(p string) { add(p, false) })
+			}
 			continue
 		}
 		matched := 0
-		walk(".", func(p string) {
-			rel, err := filepath.Rel(".", p)
-			if err != nil {
-				return
-			}
-			if matchGlob(raw, filepath.ToSlash(rel)) {
+		walkRoot(".", func(p string) {
+			if rel, err := filepath.Rel(".", p); err == nil && matchGlob(raw, filepath.ToSlash(rel)) {
 				add(p, false)
 				matched++
 			}
@@ -211,292 +209,159 @@ func buildJobs(u Unit, active []Rule, lines []string) []job {
 	return out
 }
 
-func lintCmd(args []string) int {
-	args = reorderArgs(args)
+type lintOpts struct {
+	rules, severity, out, provider, baseURL, model, apiKey, include, exclude, ledger string
+	workers, budget                                                                  int
+	temp                                                                             float64
+	noCache, noIgnore, quiet, retryErrors, dumpUnits                                 bool
+	setFlags                                                                         map[string]bool
+	paths                                                                            []string
+}
+
+func parseLintFlags(args []string) (lintOpts, error) {
+	var o lintOpts
 	fl := flag.NewFlagSet("lint", flag.ContinueOnError)
-	var fRules, fSeverity, fOut, fProvider, fBaseURL, fModel, fAPIKey, fInclude, fExclude, fLedger string
-	var fWorkers, fBudget int
-	var fTemp float64
-	var fNoCache, fNoIgnore, fQuiet, fRetryErrors, fDumpUnits bool
-	fl.StringVar(&fRules, "rules", "", "comma-separated rule ids (default all)")
-	fl.StringVar(&fSeverity, "severity", "", "min severity to report: low|med|high")
-	fl.StringVar(&fOut, "out", "text", "output: text|json|jsonl")
-	fl.StringVar(&fProvider, "provider", "", "provider name from the global config")
-	fl.StringVar(&fBaseURL, "base-url", "", "OpenAI-compatible base URL")
-	fl.StringVar(&fModel, "model", "", "model id")
-	fl.StringVar(&fAPIKey, "api-key", "", "API key")
-	fl.IntVar(&fWorkers, "workers", 8, "concurrent in-flight batches (server-side gateways cap concurrency; 8 is a safe default, raise it and expect 429 backoff)")
-	fl.IntVar(&fBudget, "budget", 0, "max model calls this run, 0 = unlimited")
-	fl.Float64Var(&fTemp, "temperature", 0, "sampling temperature")
-	fl.BoolVar(&fNoCache, "no-cache", false, "bypass .lintdec/cache")
-	fl.BoolVar(&fNoIgnore, "no-ignore", false, "report findings despite inline //lintdec:ignore")
-	fl.BoolVar(&fQuiet, "quiet", false, "no progress output")
-	fl.StringVar(&fLedger, "ledger", "", "append findings as JSONL to FILE as decided")
-	fl.BoolVar(&fRetryErrors, "retry-errors", false, "re-run only checks that errored last run")
-	fl.BoolVar(&fDumpUnits, "dump-units", false, "print split units and exit (no model calls)")
-	fl.StringVar(&fInclude, "include", "", "comma-separated glob include filters")
-	fl.StringVar(&fExclude, "exclude", "", "comma-separated glob exclude filters")
-	if err := fl.Parse(args); err != nil {
-		return 2
+	fl.StringVar(&o.rules, "rules", "", "comma-separated rule ids (default all)")
+	fl.StringVar(&o.severity, "severity", "", "min severity to report: low|med|high")
+	fl.StringVar(&o.out, "out", "text", "output: text|json|jsonl")
+	fl.StringVar(&o.provider, "provider", "", "provider name from the global config")
+	fl.StringVar(&o.baseURL, "base-url", "", "OpenAI-compatible base URL")
+	fl.StringVar(&o.model, "model", "", "model id")
+	fl.StringVar(&o.apiKey, "api-key", "", "API key")
+	fl.IntVar(&o.workers, "workers", 8, "concurrent in-flight batches")
+	fl.IntVar(&o.budget, "budget", 0, "max model calls this run, 0 = unlimited")
+	fl.Float64Var(&o.temp, "temperature", 0, "sampling temperature")
+	fl.BoolVar(&o.noCache, "no-cache", false, "bypass ~/.cache/lintdec/cache")
+	fl.BoolVar(&o.noIgnore, "no-ignore", false, "report findings despite inline //lintdec:ignore")
+	fl.BoolVar(&o.quiet, "quiet", false, "no progress output")
+	fl.StringVar(&o.ledger, "ledger", "", "append findings as JSONL to FILE as decided")
+	fl.BoolVar(&o.retryErrors, "retry-errors", false, "re-run only checks that errored last run")
+	fl.BoolVar(&o.dumpUnits, "dump-units", false, "print split units and exit (no model calls)")
+	fl.StringVar(&o.include, "include", "", "comma-separated glob include filters")
+	fl.StringVar(&o.exclude, "exclude", "", "comma-separated glob exclude filters")
+	if err := fl.Parse(reorderArgs(args)); err != nil {
+		return o, err
 	}
-	setFlags := map[string]bool{}
-	fl.Visit(func(f *flag.Flag) { setFlags[f.Name] = true })
+	o.setFlags = map[string]bool{}
+	fl.Visit(func(f *flag.Flag) { o.setFlags[f.Name] = true })
+	o.paths = fl.Args()
+	if len(o.paths) == 0 {
+		o.paths = []string{"."}
+	}
+	return o, nil
+}
 
-	if fSeverity == "" {
-		fSeverity = "low"
-	}
-	if severityRank(fSeverity) < 0 {
-		fmt.Fprintf(os.Stderr, "bad --severity: %s (low|med|high)\n", fSeverity)
-		return 2
-	}
-	include := []string{"*.go", "*.md"}
-	if fInclude != "" {
-		include = strings.Split(fInclude, ",")
-	}
-	var exclude []string
-	if fExclude != "" {
-		exclude = strings.Split(fExclude, ",")
-	}
-
-	// Project config: flag > env > lintdec.yaml > global config. The yaml is
-	// discovered from the linted paths' common ancestor, not the CWD, so
-	// `lintdec quack` run from anywhere finds quack's policy.
-	paths := fl.Args()
-	if len(paths) == 0 {
-		paths = []string{"."}
-	}
-	base := "."
-	for i, p := range paths {
-		if i == 0 {
-			base = p
-			continue
-		}
-		if a, ok := commonAncestor(base, p); ok {
-			base = a
-		}
-	}
-	if st, err := os.Stat(base); err == nil && !st.IsDir() {
-		base = filepath.Dir(base)
-	}
-	pc, pcWarn := loadProjectConfig(base)
-	for _, w := range pcWarn {
-		fmt.Fprintln(os.Stderr, "warn: "+w)
-	}
-	if !setFlags["severity"] && pc.Severity != "" {
-		fSeverity = pc.Severity
-	}
-	if fInclude == "" && len(pc.Include) > 0 {
-		include = pc.Include
-	}
-	if fExclude == "" && len(pc.Exclude) > 0 {
-		exclude = pc.Exclude
-	}
-	active := make([]Rule, 0, len(rules))
-	for _, r := range rules {
-		active = append(active, r)
-	}
+func resolveRules(fRules string, pc ProjectConfig) ([]Rule, error) {
 	if fRules != "" {
 		var want []Rule
 		for id := range strings.SplitSeq(fRules, ",") {
-			if r, ok := findRule(strings.TrimSpace(id)); ok {
-				want = append(want, r)
-			} else {
-				fmt.Fprintf(os.Stderr, "unknown rule: %s\n", id)
-				return 2
+			r, ok := findRule(strings.TrimSpace(id))
+			if !ok {
+				return nil, fmt.Errorf("unknown rule: %s", id)
 			}
+			want = append(want, r)
 		}
-		active = want
-	} else {
-		if len(pc.RulesOn) > 0 {
-			var on []Rule
-			for _, r := range active {
-				if slices.Contains(pc.RulesOn, r.ID) {
-					on = append(on, r)
-				}
-			}
-			active = on
-		}
-		var off []Rule
-		for _, r := range active {
-			if !slices.Contains(pc.RulesOff, r.ID) {
-				off = append(off, r)
-			}
-		}
-		active = off
+		return want, nil
 	}
+	active := slices.Clone(rules)
+	if len(pc.RulesOn) > 0 {
+		active = slices.DeleteFunc(active, func(r Rule) bool { return !slices.Contains(pc.RulesOn, r.ID) })
+	}
+	return slices.DeleteFunc(active, func(r Rule) bool { return slices.Contains(pc.RulesOff, r.ID) }), nil
+}
 
-	// Provider resolution.
+func resolveProvider(o lintOpts, pc ProjectConfig) (Provider, error) {
 	var prov Provider
-	if fBaseURL != "" {
-		prov = Provider{BaseURL: strings.TrimRight(fBaseURL, "/"), Model: fModel, APIKey: fAPIKey}
+	if o.baseURL != "" {
+		prov = Provider{BaseURL: strings.TrimRight(o.baseURL, "/"), Model: o.model, APIKey: o.apiKey}
 	} else {
-		name := fProvider
-		if name == "" {
-			name = os.Getenv("LINTDEC_PROVIDER")
-		}
-		if name == "" {
-			name = pc.Provider
-		}
+		name := firstNonEmpty(o.provider, os.Getenv("LINTDEC_PROVIDER"), pc.Provider)
 		cfg, err := loadConfig()
 		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 2
+			return prov, err
 		}
+		name = firstNonEmpty(name, cfg.Active)
 		if name == "" {
-			name = cfg.Active
-		}
-		if name == "" {
-			fmt.Fprintln(os.Stderr, "no provider configured; run: lintdec provider add")
-			return 2
+			return prov, fmt.Errorf("no provider configured; run: lintdec provider add")
 		}
 		p, ok := cfg.Providers[name]
 		if !ok {
-			fmt.Fprintf(os.Stderr, "no such provider: %s\n", name)
-			return 2
+			return prov, fmt.Errorf("no such provider: %s", name)
 		}
 		prov = p
 	}
-	if e := os.Getenv("LINTDEC_BASE_URL"); e != "" && fBaseURL == "" {
+	if e := os.Getenv("LINTDEC_BASE_URL"); e != "" && o.baseURL == "" {
 		prov.BaseURL = strings.TrimRight(e, "/")
 	}
-	if fModel == "" {
-		if e := os.Getenv("LINTDEC_MODEL"); e != "" {
-			prov.Model = e
-		} else if pc.Model != "" {
-			prov.Model = pc.Model
-		}
+	if o.model == "" {
+		prov.Model = firstNonEmpty(os.Getenv("LINTDEC_MODEL"), pc.Model, prov.Model)
 	}
-	if fAPIKey == "" {
-		if e := os.Getenv("LINTDEC_API_KEY"); e != "" {
-			prov.APIKey = e
-		}
+	if o.apiKey == "" {
+		prov.APIKey = firstNonEmpty(os.Getenv("LINTDEC_API_KEY"), prov.APIKey)
 	}
 	if prov.BaseURL == "" || prov.Model == "" {
-		fmt.Fprintln(os.Stderr, "provider incomplete (need baseUrl and model); run: lintdec provider add")
-		return 2
+		return prov, fmt.Errorf("provider incomplete (need baseUrl and model); run: lintdec provider add")
 	}
+	return prov, nil
+}
 
-	files, err := collectFiles(paths, include, exclude)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 2
-	}
-
-	linesCache := map[string][]string{}
-	var units []Unit
-	for _, f := range files {
-		b, err := os.ReadFile(f)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "warn: %s: %v (skipped)\n", f, err)
-			continue
-		}
-		u := splitFile(f, b)
-		linesCache[f] = strings.Split(string(b), "\n")
-		units = append(units, u...)
-	}
-
-	var jobs []job
-	decisions := 0
-	for _, u := range units {
-		s := buildJobs(u, active, linesCache[u.File])
-		jobs = append(jobs, s...)
-		for _, j := range s {
-			decisions += len(j.rules)
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
 		}
 	}
+	return ""
+}
 
-	if fDumpUnits {
-		fmt.Printf("%d files, %d units, %d batches (%d decisions) with rules %v\n", len(files), len(units), len(jobs), decisions, ruleIDList(active))
-		for _, u := range units {
-			fmt.Printf("  %-12s %s:%d-%d (%d lines)\n", u.Kind, u.File, u.Start, u.End, u.End-u.Start+1)
-			if u.End-u.Start+1 > rawBudgetLines && u.Kind != "File" {
-				fmt.Printf("    digest:\n")
-				for l := range strings.SplitSeq(digestFor(u, linesCache[u.File]), "\n") {
-					fmt.Printf("      %s\n", l)
-				}
+func filterRetryJobs(jobs []job) ([]job, bool, error) {
+	b, err := os.ReadFile(filepath.Join(".lintdec", "errored.json"))
+	if err != nil || len(b) == 0 {
+		fmt.Println("no errored checks to retry")
+		return nil, true, nil
+	}
+	var keys []string
+	if err := json.Unmarshal(b, &keys); err != nil {
+		return nil, false, err
+	}
+	want := map[string]bool{}
+	for _, k := range keys {
+		want[k] = true
+	}
+	var keep []job
+	for _, j := range jobs {
+		for _, r := range j.rules {
+			if want[fmt.Sprintf("%s|%s|%d|%d", r.ID, j.unit.File, j.unit.Start, j.unit.End)] {
+				keep = append(keep, j)
+				break
 			}
 		}
-		return 0
 	}
-
-	if fRetryErrors {
-		b, err := os.ReadFile(filepath.Join(".lintdec", "errored.json"))
-		if err != nil || len(b) == 0 {
-			fmt.Println("no errored checks to retry")
-			return 0
-		}
-		var keys []string
-		if err := json.Unmarshal(b, &keys); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 2
-		}
-		want := map[string]bool{}
-		for _, k := range keys {
-			want[k] = true
-		}
-		var keep []job
-		for _, j := range jobs {
-			for _, r := range j.rules {
-				if want[fmt.Sprintf("%s|%s|%d|%d", r.ID, j.unit.File, j.unit.Start, j.unit.End)] {
-					keep = append(keep, j)
-					break
-				}
-			}
-		}
-		jobs = keep
-		os.Remove(filepath.Join(".lintdec", "errored.json"))
-		if len(jobs) == 0 {
-			fmt.Println("no errored checks match the current tree")
-			return 0
-		}
+	os.Remove(filepath.Join(".lintdec", "errored.json"))
+	if len(keep) == 0 {
+		fmt.Println("no errored checks match the current tree")
+		return nil, true, nil
 	}
+	return keep, false, nil
+}
 
-	if len(jobs) == 0 {
-		fmt.Fprintln(os.Stderr, "0 checks (no unit matches the active rules)")
-		return 0
-	}
-	if !fQuiet {
-		fmt.Fprintf(os.Stderr, "lintdec: %d files → %d units, %d batches (%d decisions) · rules: %d · model: %s\n",
-			len(files), len(units), len(jobs), decisions, len(active), prov.Model)
-	}
+type poolResult struct {
+	findings      []Finding
+	ignoredCount  int
+	errs          int
+	erroredKeys   []string
+	budgetSkipped int
+	interrupted   bool
+}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
-
-	cl := &client{
-		base:   prov.BaseURL,
-		model:  prov.Model,
-		apiKey: prov.APIKey,
-		temp:   fTemp,
-		httpc:  &http.Client{Timeout: 5 * time.Minute},
-	}
-	ch := newCache(!fNoCache)
-	prog := newProgress(len(jobs), fQuiet)
-
-	var ledgerF *os.File
-	if fLedger != "" {
-		ledgerF, err = os.OpenFile(fLedger, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 2
-		}
-		defer ledgerF.Close()
-	}
-
+func runPool(ctx context.Context, jobs []job, o lintOpts, cl *client, ch *cache, prog *progress, linesCache map[string][]string, ledgerF *os.File) poolResult {
 	var (
-		mu            sync.Mutex
-		findings      []Finding
-		ignoredCount  int
-		errs          int
-		erroredKeys   []string
-		budgetSkipped int
-		callsUsed     atomic.Int64
+		mu        sync.Mutex
+		res       poolResult
+		callsUsed atomic.Int64
 	)
-
 	runJob := func(j job) {
 		start := time.Now()
-		// per-(unit, rule) cache first: only genuinely uncached rules go to
-		// the model, so any --rules combination reuses prior work
 		tempStr := fmt.Sprintf("%v", cl.temp)
 		verdicts := make(map[string]Verdict, len(j.rules))
 		var todo []Rule
@@ -509,21 +374,21 @@ func lintCmd(args []string) int {
 		}
 		wasCached := len(todo) == 0
 		if len(todo) > 0 {
-			if fBudget > 0 && callsUsed.Add(1) > int64(fBudget) {
+			if o.budget > 0 && callsUsed.Add(1) > int64(o.budget) {
 				mu.Lock()
-				budgetSkipped++
+				res.budgetSkipped++
 				mu.Unlock()
 				prog.tick(0, false, "budget")
 				return
 			}
-			v, err := runWithRetry(cl, job{unit: j.unit, rules: todo})
+			v, err := runWithRetry(ctx, cl, job{unit: j.unit, rules: todo})
 			if err != nil {
 				mu.Lock()
-				errs++
+				res.errs++
 				for _, r := range todo {
-					erroredKeys = append(erroredKeys, fmt.Sprintf("%s|%s|%d|%d", r.ID, j.unit.File, j.unit.Start, j.unit.End))
+					res.erroredKeys = append(res.erroredKeys, fmt.Sprintf("%s|%s|%d|%d", r.ID, j.unit.File, j.unit.Start, j.unit.End))
 				}
-				show := errs <= 5
+				show := res.errs <= 5 && ctx.Err() == nil
 				mu.Unlock()
 				if show {
 					fmt.Fprintf(os.Stderr, "warn: %s: %v\n", jobKey(j), err)
@@ -541,36 +406,32 @@ func lintCmd(args []string) int {
 			if !vv.Lint {
 				continue
 			}
-			// Structural guard, not a size judgment: a hard wrap is where line
-			// breaks fall mid-sentence, so a single-line unit or a block of
-			// complete sentences (which is what reflowed prose looks like) is
-			// not one. Everything else stays with the model.
+			// Structural guard, not a size judgment: hard wraps break mid-sentence.
 			if r.ID == "md-hard-wrap" && (strings.Count(j.unit.Text, "\n") < 1 || wrapBreaks(j.unit.Text) < 2) {
 				continue
 			}
 			f := buildFinding(j, r, vv, linesCache)
-			if !fNoIgnore && isIgnored(r.ID, j, f.Line, linesCache) {
+			if !o.noIgnore && isIgnored(r.ID, j, f.Line, linesCache) {
 				mu.Lock()
-				ignoredCount++
+				res.ignoredCount++
 				mu.Unlock()
 				continue
 			}
 			mu.Lock()
-			findings = append(findings, f)
-			mu.Unlock()
+			res.findings = append(res.findings, f)
 			if ledgerF != nil {
 				b, _ := json.Marshal(f)
 				ledgerF.Write(append(b, '\n'))
 			}
+			mu.Unlock()
 			prog.addFinding(f)
 		}
-		label := fmt.Sprintf("%d flagged of %d", lintCount(verdicts), len(j.rules))
-		prog.tick(time.Since(start), wasCached, jobKey(j)+" → "+label)
+		prog.tick(time.Since(start), wasCached, fmt.Sprintf("%s → %d flagged of %d", jobKey(j), lintCount(verdicts), len(j.rules)))
 	}
 
 	jobsCh := make(chan job, 64)
 	var wg sync.WaitGroup
-	nW := max(min(fWorkers, len(jobs)), 1)
+	nW := max(min(o.workers, len(jobs)), 1)
 	for range nW {
 		wg.Go(func() {
 			for j := range jobsCh {
@@ -581,10 +442,9 @@ func lintCmd(args []string) int {
 			}
 		})
 	}
-	interrupted := false
 	for _, j := range jobs {
 		if ctx.Err() != nil {
-			interrupted = true
+			res.interrupted = true
 			break
 		}
 		prog.noteSubmit()
@@ -592,18 +452,43 @@ func lintCmd(args []string) int {
 	}
 	close(jobsCh)
 	wg.Wait()
-	// jobs drain into the channel faster than workers consume them, so the
-	// send loop often finishes before SIGINT lands; the context is the truth
 	if ctx.Err() != nil {
-		interrupted = true
+		res.interrupted = true
 	}
+	return res
+}
 
-	writeErrored(erroredKeys)
+func splitAllFiles(files []string, active []Rule) ([]Unit, []job, int, map[string][]string) {
+	linesCache := map[string][]string{}
+	var units []Unit
+	var jobs []job
+	decisions := 0
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warn: %s: %v (skipped)\n", f, err)
+			continue
+		}
+		u := splitFile(f, b)
+		linesCache[f] = strings.Split(string(b), "\n")
+		units = append(units, u...)
+		for _, unit := range u {
+			s := buildJobs(unit, active, linesCache[unit.File])
+			jobs = append(jobs, s...)
+			for _, j := range s {
+				decisions += len(j.rules)
+			}
+		}
+	}
+	return units, jobs, decisions, linesCache
+}
 
-	minRank := severityRank(fSeverity)
+func emitReport(res poolResult, sev, outFmt string, nJobs int, prog *progress) int {
+	writeErrored(res.erroredKeys)
+	minRank := severityRank(sev)
 	var report []Finding
 	sevSuppressed := 0
-	for _, f := range findings {
+	for _, f := range res.findings {
 		if severityRank(f.Severity) >= minRank {
 			report = append(report, f)
 		} else {
@@ -611,20 +496,125 @@ func lintCmd(args []string) int {
 		}
 	}
 	sortFindings(report)
-	emit(report, fOut)
-
+	emit(report, outFmt)
 	exit := 0
 	if len(report) > 0 {
 		exit = 1
 	}
-	if len(jobs) > 0 && errs == len(jobs) {
+	if nJobs > 0 && res.errs == nJobs {
 		exit = 2
 	}
-	if interrupted {
+	if res.interrupted {
 		exit = 130
 	}
-	prog.finish(len(report), errs, ignoredCount, budgetSkipped, sevSuppressed, exit)
+	prog.finish(len(report), res.errs, res.ignoredCount, res.budgetSkipped, sevSuppressed, exit)
 	return exit
+}
+
+func resolveProjectBase(paths []string) string {
+	base := paths[0]
+	for _, p := range paths[1:] {
+		if a, ok := commonAncestor(base, p); ok {
+			base = a
+		}
+	}
+	if st, err := os.Stat(base); err == nil && !st.IsDir() {
+		return filepath.Dir(base)
+	}
+	return base
+}
+
+func resolveGlobs(o lintOpts, pc ProjectConfig) (include, exclude []string) {
+	include = defaultInclude()
+	if o.include != "" {
+		include = strings.Split(o.include, ",")
+	} else if len(pc.Include) > 0 {
+		include = pc.Include
+	}
+	exclude = pc.Exclude
+	if o.exclude != "" {
+		exclude = strings.Split(o.exclude, ",")
+	}
+	return include, exclude
+}
+
+func dumpUnits(files []string, units []Unit, jobs []job, decisions int, active []Rule) {
+	fmt.Printf("%d files, %d units, %d batches (%d decisions) with rules %v\n", len(files), len(units), len(jobs), decisions, ruleIDList(active))
+	for _, u := range units {
+		fmt.Printf("  %-12s %s:%d-%d (%d lines)\n", u.Kind, u.File, u.Start, u.End, u.End-u.Start+1)
+	}
+}
+
+func lintCmd(args []string) int {
+	o, err := parseLintFlags(args)
+	if err != nil {
+		return 2
+	}
+	pc, pcWarn := loadProjectConfig(resolveProjectBase(o.paths))
+	for _, w := range pcWarn {
+		fmt.Fprintln(os.Stderr, "warn: "+w)
+	}
+	sev := firstNonEmpty(o.severity, pc.Severity, "low")
+	if severityRank(sev) < 0 {
+		fmt.Fprintf(os.Stderr, "bad --severity: %s (low|med|high)\n", sev)
+		return 2
+	}
+	include, exclude := resolveGlobs(o, pc)
+	active, err := resolveRules(o.rules, pc)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	files, err := collectFiles(o.paths, include, exclude)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	units, jobs, decisions, linesCache := splitAllFiles(files, active)
+	if o.dumpUnits {
+		dumpUnits(files, units, jobs, decisions, active)
+		return 0
+	}
+	prov, err := resolveProvider(o, pc)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	if o.retryErrors {
+		var done bool
+		jobs, done, err = filterRetryJobs(jobs)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+		if done {
+			return 0
+		}
+	}
+	if len(jobs) == 0 {
+		fmt.Fprintln(os.Stderr, "0 checks (no unit matches the active rules)")
+		return 0
+	}
+	if !o.quiet {
+		fmt.Fprintf(os.Stderr, "lintdec: %d files → %d units, %d batches (%d decisions) · rules: %d · model: %s\n",
+			len(files), len(units), len(jobs), decisions, len(active), prov.Model)
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	cl := &client{base: prov.BaseURL, model: prov.Model, apiKey: prov.APIKey, temp: o.temp, httpc: &http.Client{Timeout: 5 * time.Minute}}
+	ch := newCache(!o.noCache)
+	prog := newProgress(len(jobs), o.quiet)
+	var ledgerF *os.File
+	if o.ledger != "" {
+		ledgerF, err = os.OpenFile(o.ledger, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+		defer ledgerF.Close()
+	}
+	res := runPool(ctx, jobs, o, cl, ch, prog, linesCache, ledgerF)
+	return emitReport(res, sev, o.out, len(jobs), prog)
 }
 
 func ruleIDList(rs []Rule) []string {
