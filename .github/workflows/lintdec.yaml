@@ -34,3 +34,33 @@ jobs:
       # Gates only lines this change touches.
       - if: github.event_name == 'pull_request'
         run: go run ./tools/sloplint diff origin/${{ github.base_ref }}
+
+  # Each green push to main publishes the CLI, pinned by commit under a single `latest` release.
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [check]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Build
+        run: |
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=1 go build \
+            -ldflags "-s -w -X main.version=${GITHUB_SHA:0:7}" \
+            -o dist/lintdec .
+      - name: Release
+        run: |
+          ./dist/lintdec version
+          (sha256sum dist/lintdec > dist/lintdec.sha256) < dist/lintdec
+          gh release delete latest --yes >/dev/null 2>&1 || true
+          gh release create latest dist/lintdec dist/lintdec.sha256 \
+            --title "lintdec ${GITHUB_SHA:0:7}" \
+            --notes "commit $GITHUB_SHA"
+          gh release download latest --pattern 'lintdec*' --dir dist/check
+          (cd dist/check && sha256sum -c lintdec.sha256)
+          dist/check/lintdec version
