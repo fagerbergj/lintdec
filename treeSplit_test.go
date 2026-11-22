@@ -12,6 +12,7 @@ export function arrowProblem(from: string, to: string): string | undefined {
   return 'x';
 }
 type Edge = { from: string; to: string };
+export interface Graph { nodes: number; }
 export const process = (a: string) => a.length;
 `
 
@@ -33,6 +34,10 @@ func TestSplitTreeTS(t *testing.T) {
 	}
 	if n := countKind(units, "Function"); n != 2 {
 		t.Errorf("want 2 Function units (export fn + const arrow), got %d in %s", n, joined)
+	}
+	// only interface_declaration is an Interface; the type alias Edge is not
+	if n := countKind(units, "Interface"); n != 1 {
+		t.Errorf("want 1 Interface unit (interface only, not type alias), got %d in %s", n, joined)
 	}
 	// doc comment must attach to the exported function
 	if arrow == nil || arrow.Kind != "Function" || arrow.Context != "doc for arrowProblem" {
@@ -106,6 +111,45 @@ export function greet(name: string) {
 	jUnits := splitTree("Box.java", []byte(javaSrc), tsLangs["java"])
 	if n := countKind(jUnits, "Function"); n != 0 {
 		t.Errorf("java fields should not be emitted as Function units, got %d", n)
+	}
+}
+
+func TestSplitTreeCommentGrouping(t *testing.T) {
+	bashSrc := `set -euo pipefail
+
+# first line of a note
+# second line of a note
+
+main() {
+  echo hello
+}
+`
+	units := splitTree("probe.sh", []byte(bashSrc), tsLangs["sh"])
+	var cm *Unit
+	for i := range units {
+		if units[i].Kind == "Comment" {
+			if cm != nil {
+				t.Fatalf("want 1 Comment unit (grouped run), got >1: %+v", units)
+			}
+			cm = &units[i]
+		}
+	}
+	if cm == nil {
+		t.Fatal("no Comment unit emitted")
+	}
+	if !strings.Contains(cm.Text, "first line of a note") || !strings.Contains(cm.Text, "second line of a note") {
+		t.Errorf("grouped comment text missing run: %q", cm.Text)
+	}
+	if !strings.Contains(cm.Context, "set -euo pipefail") || !strings.Contains(cm.Context, "echo hello") {
+		t.Errorf("comment context missing surrounding code: %q", cm.Context)
+	}
+}
+
+func TestSplitTreeTSInterfaceOnly(t *testing.T) {
+	src := "type Money = { amount: number };\nexport interface Wallet { add(m: Money): void; }\n"
+	units := splitTree("money.ts", []byte(src), tsLangs["ts"])
+	if n := countKind(units, "Interface"); n != 1 {
+		t.Errorf("want 1 Interface (interface_declaration only, not type_alias_declaration), got %d", n)
 	}
 }
 

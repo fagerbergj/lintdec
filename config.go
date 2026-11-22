@@ -103,7 +103,10 @@ func (c Config) save() error {
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return err
 	}
-	b, _ := json.MarshalIndent(c, "", "  ")
+	b, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return err
+	}
 	return os.WriteFile(p, b, 0o600)
 }
 

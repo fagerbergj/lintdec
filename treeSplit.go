@@ -35,7 +35,7 @@ type tsCfg struct {
 var tsLangs = map[string]tsCfg{
 	"ts": {
 		"typescript", tsx.GetLanguage,
-		map[string]bool{"interface_declaration": true, "type_alias_declaration": true},
+		map[string]bool{"interface_declaration": true},
 		map[string]bool{"describe": true, "it": true, "test": true, "xit": true, "xdescribe": true, "xtest": true, "beforeEach": true, "afterEach": true, "beforeAll": true, "afterAll": true},
 		"",
 	},
@@ -132,14 +132,15 @@ func splitTree(path string, src []byte, cfg tsCfg) []Unit {
 			c := n.Child(i)
 			t := c.Type()
 			if strings.Contains(t, "comment") {
-				doc := docRun(c, src)
-				if next := c.NextSibling(); next != nil && isUnitStart(next, cfg, src) &&
-					c.EndPoint().Row+1 == next.StartPoint().Row {
-					docs[c] = doc // attach below, not emitted as a unit
+				if attachesDoc(c, cfg, src) {
+					docs[c] = docRun(c, src) // attach below, not emitted as a unit
 				} else {
-					units = append(units, Unit{Kind: "Comment", File: path,
-						Start: int(c.StartPoint().Row) + 1, End: int(c.EndPoint().Row) + 1,
-						Text: strings.Join(lines[int(c.StartPoint().Row):int(c.EndPoint().Row)+1], "\n")})
+					u, last := commentUnit(path, c, cfg, src, lines)
+					units = append(units, u)
+					for last != c && c.NextSibling() != nil {
+						c = c.NextSibling()
+						i++
+					}
 				}
 				continue
 			}
@@ -224,6 +225,39 @@ func isUnitStart(n *sitter.Node, cfg tsCfg, src []byte) bool {
 		return false
 	}
 	return kindForNode(n, cfg, src) != ""
+}
+
+// attachesDoc: whether comment c is the doc for the sibling after it.
+func attachesDoc(c *sitter.Node, cfg tsCfg, src []byte) bool {
+	next := c.NextSibling()
+	return next != nil && isUnitStart(next, cfg, src) && c.EndPoint().Row+1 == next.StartPoint().Row
+}
+
+// commentUnit: groups consecutive non-doc comment siblings into one Comment
+// unit with +-8 lines of surrounding code as Context; returns the last sibling consumed.
+func commentUnit(path string, first *sitter.Node, cfg tsCfg, src []byte, lines []string) (Unit, *sitter.Node) {
+	last := first
+	for nxt := first.NextSibling(); nxt != nil && strings.Contains(nxt.Type(), "comment") && nxt.StartPoint().Row <= last.EndPoint().Row+1 && !attachesDoc(nxt, cfg, src); nxt = nxt.NextSibling() {
+		last = nxt
+	}
+	s, e := int(first.StartPoint().Row)+1, int(last.EndPoint().Row)+1
+	return Unit{Kind: "Comment", File: path, Start: s, End: e,
+		Text:    strings.Join(lines[s-1:e], "\n"),
+		Context: commentContext(lines, s, e)}, last
+}
+
+// commentContext: +-8 non-blank surrounding lines with line numbers.
+func commentContext(lines []string, s, e int) string {
+	var ctx []string
+	for ln := s - 8; ln <= e+8; ln++ {
+		if ln < 1 || ln > len(lines) || (ln >= s && ln <= e) {
+			continue
+		}
+		if t := strings.TrimSpace(lines[ln-1]); t != "" {
+			ctx = append(ctx, fmt.Sprintf("%d\t%s", ln, lines[ln-1]))
+		}
+	}
+	return strings.Join(ctx, "\n")
 }
 
 func kindForNode(n *sitter.Node, cfg tsCfg, src []byte) string {
