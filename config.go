@@ -190,12 +190,18 @@ func fetchSystemOneModel(p Provider) ([]string, error) {
 		Model string `json:"model"`
 	}
 	if err := json.Unmarshal(b, &h); err != nil {
-		return nil, err
+		return nil, healthNotDecider(p.BaseURL, err)
 	}
 	if h.Model == "" {
 		return []string{"strands-decider-latest"}, nil
 	}
 	return []string{h.Model}, nil
+}
+
+// healthNotDecider explains the common protocol mixup: OpenAI servers answer /health
+// with plain text, so a JSON parse failure means the provider was added as systemone.
+func healthNotDecider(baseURL string, err error) error {
+	return fmt.Errorf("%s: /health is not Strands Decider JSON (%v); for an OpenAI server use protocol openai", baseURL, err)
 }
 
 func testConnection(p Provider, model string) error {
@@ -265,6 +271,7 @@ func providerAdd(c *Config, rest []string) int {
 	p.BaseURL = strings.TrimRight(ask(&p.BaseURL, "base URL", defURL), "/")
 	ask(&p.APIKey, "api key (blank if none)", "")
 	var yes string
+	tested := false
 	if strings.HasPrefix(strings.ToLower(ask(&yes, "test the connection now?", "y")), "y") {
 		if err := testConnection(p, ""); err != nil {
 			fmt.Fprintf(os.Stderr, "connection test failed: %v\n", err)
@@ -272,6 +279,8 @@ func providerAdd(c *Config, rest []string) int {
 			if !strings.HasPrefix(strings.ToLower(ask(&k, "add it anyway?", "n")), "y") {
 				return 2
 			}
+		} else {
+			tested = true
 		}
 	}
 	c.Providers[name] = p
@@ -288,7 +297,12 @@ func providerAdd(c *Config, rest []string) int {
 	if c.Active == name {
 		suffix = " (active)"
 	}
-	fmt.Printf("added %s%s — run 'lintdec model %s' to choose a model\n", name, suffix, name)
+	fmt.Printf("added %s%s\n", name, suffix)
+	// A provider with no model is unusable for linting, so pick one right away.
+	if tested && c.Active == name {
+		return modelPick(c, []string{name})
+	}
+	fmt.Printf("run 'lintdec model %s' to choose a model\n", name)
 	return 0
 }
 

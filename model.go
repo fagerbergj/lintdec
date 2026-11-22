@@ -42,17 +42,33 @@ func modelCmd(args []string) int {
 }
 
 func modelList(c Config) int {
-	choices := savedModelChoices(c)
-	if len(choices) == 0 {
-		fmt.Println("no models configured; run: lintdec model")
+	if len(c.Providers) == 0 {
+		fmt.Println("no providers configured; run: lintdec provider add")
 		return 0
 	}
-	for _, ch := range choices {
-		mark := " "
-		if ch.provider == c.Active && ch.model == c.activeModelFor(ch.provider, c.Providers[ch.provider]) {
-			mark = "*"
+	names := make([]string, 0, len(c.Providers))
+	for n := range c.Providers {
+		names = append(names, n)
+	}
+	slices.Sort(names)
+	picked := 0
+	for _, name := range names {
+		p := c.Providers[name]
+		if len(p.Models) == 0 {
+			fmt.Printf("  %-12s (no models yet, run: lintdec model %s)\n", name, name)
+			continue
 		}
-		fmt.Printf("%s %-12s %s\n", mark, ch.provider, ch.model)
+		for _, m := range p.Models {
+			mark := " "
+			if name == c.Active && m == c.activeModelFor(name, p) {
+				mark = "*"
+			}
+			fmt.Printf("%s %-12s %s\n", mark, name, m)
+			picked++
+		}
+	}
+	if picked == 0 {
+		fmt.Println("pick a model: lintdec model <provider>")
 	}
 	return 0
 }
