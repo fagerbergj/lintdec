@@ -36,6 +36,7 @@ func jobKey(j job) string {
 func reorderArgs(args []string) []string {
 	valueFlags := map[string]bool{
 		"rules": true, "severity": true, "out": true, "provider": true, "base-url": true,
+		"protocol": true, "threshold": true,
 		"model": true, "api-key": true, "workers": true, "budget": true, "temperature": true,
 		"ledger": true, "include": true, "exclude": true,
 	}
@@ -210,12 +211,12 @@ func buildJobs(u Unit, active []Rule, lines []string) []job {
 }
 
 type lintOpts struct {
-	rules, severity, out, provider, baseURL, model, apiKey, include, exclude, ledger string
-	workers, budget                                                                  int
-	temp                                                                             float64
-	noCache, noIgnore, quiet, retryErrors, dumpUnits                                 bool
-	setFlags                                                                         map[string]bool
-	paths                                                                            []string
+	rules, severity, out, provider, baseURL, protocol, model, apiKey, include, exclude, ledger string
+	workers, budget                                                                            int
+	temp, threshold                                                                            float64
+	noCache, noIgnore, quiet, retryErrors, dumpUnits                                           bool
+	setFlags                                                                                   map[string]bool
+	paths                                                                                      []string
 }
 
 func parseLintFlags(args []string) (lintOpts, error) {
@@ -225,12 +226,14 @@ func parseLintFlags(args []string) (lintOpts, error) {
 	fl.StringVar(&o.severity, "severity", "", "min severity to report: low|med|high")
 	fl.StringVar(&o.out, "out", "text", "output: text|json|jsonl")
 	fl.StringVar(&o.provider, "provider", "", "provider name from the global config")
-	fl.StringVar(&o.baseURL, "base-url", "", "OpenAI-compatible base URL")
+	fl.StringVar(&o.baseURL, "base-url", "", "API base URL")
+	fl.StringVar(&o.protocol, "protocol", "", "provider protocol: openai|systemone")
 	fl.StringVar(&o.model, "model", "", "model id")
 	fl.StringVar(&o.apiKey, "api-key", "", "API key")
 	fl.IntVar(&o.workers, "workers", 8, "concurrent in-flight batches")
 	fl.IntVar(&o.budget, "budget", 0, "max model calls this run, 0 = unlimited")
 	fl.Float64Var(&o.temp, "temperature", 0, "sampling temperature")
+	fl.Float64Var(&o.threshold, "threshold", 0.75, "noul probability threshold for systemone providers")
 	fl.BoolVar(&o.noCache, "no-cache", false, "bypass ~/.cache/lintdec/cache")
 	fl.BoolVar(&o.noIgnore, "no-ignore", false, "report findings despite inline //lintdec:ignore")
 	fl.BoolVar(&o.quiet, "quiet", false, "no progress output")
@@ -271,9 +274,10 @@ func resolveRules(fRules string, pc ProjectConfig) ([]Rule, error) {
 }
 
 type endpoint struct {
-	BaseURL string
-	Model   string
-	APIKey  string
+	BaseURL  string
+	Protocol string
+	Model    string
+	APIKey   string
 }
 
 func pickProvider(cfg Config, wantProv, wantModel string) (string, Provider, error) {
@@ -304,7 +308,7 @@ func resolveProvider(o lintOpts, pc ProjectConfig) (endpoint, error) {
 	wantProv := firstNonEmpty(o.provider, os.Getenv("LINTDEC_PROVIDER"), pc.Provider)
 	var ep endpoint
 	if o.baseURL != "" {
-		ep = endpoint{BaseURL: strings.TrimRight(o.baseURL, "/"), Model: wantModel, APIKey: o.apiKey}
+		ep = endpoint{BaseURL: strings.TrimRight(o.baseURL, "/"), Protocol: o.protocol, Model: wantModel, APIKey: o.apiKey}
 	} else {
 		cfg, err := loadConfig()
 		if err != nil {
@@ -315,9 +319,10 @@ func resolveProvider(o lintOpts, pc ProjectConfig) (endpoint, error) {
 			return ep, err
 		}
 		ep = endpoint{
-			BaseURL: strings.TrimRight(p.BaseURL, "/"),
-			Model:   firstNonEmpty(wantModel, cfg.activeModelFor(name, p)),
-			APIKey:  firstNonEmpty(o.apiKey, p.APIKey),
+			BaseURL:  strings.TrimRight(p.BaseURL, "/"),
+			Protocol: firstNonEmpty(o.protocol, p.Protocol),
+			Model:    firstNonEmpty(wantModel, cfg.activeModelFor(name, p)),
+			APIKey:   firstNonEmpty(o.apiKey, p.APIKey),
 		}
 	}
 	if e := os.Getenv("LINTDEC_BASE_URL"); e != "" && o.baseURL == "" {
@@ -390,6 +395,9 @@ func runPool(ctx context.Context, jobs []job, o lintOpts, cl *client, ch *cache,
 	runJob := func(j job) {
 		start := time.Now()
 		tempStr := fmt.Sprintf("%v", cl.temp)
+		if cl.protocol == "systemone" {
+			tempStr = fmt.Sprintf("systemone:%.3f", cl.threshold)
+		}
 		verdicts := make(map[string]Verdict, len(j.rules))
 		var todo []Rule
 		for _, r := range j.rules {
@@ -628,7 +636,15 @@ func lintCmd(args []string) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	cl := &client{base: prov.BaseURL, model: prov.Model, apiKey: prov.APIKey, temp: o.temp, httpc: &http.Client{Timeout: 5 * time.Minute}}
+	cl := &client{
+		base:      prov.BaseURL,
+		protocol:  prov.Protocol,
+		model:     prov.Model,
+		apiKey:    prov.APIKey,
+		temp:      o.temp,
+		threshold: o.threshold,
+		httpc:     &http.Client{Timeout: 5 * time.Minute},
+	}
 	ch := newCache(!o.noCache)
 	prog := newProgress(len(jobs), o.quiet)
 	var ledgerF *os.File

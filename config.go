@@ -15,10 +15,18 @@ import (
 )
 
 type Provider struct {
-	BaseURL string   `json:"baseUrl"`
-	APIKey  string   `json:"apiKey,omitempty"`
-	Models  []string `json:"models,omitempty"`
-	Model   string   `json:"model,omitempty"` // legacy; migrated into Models on load
+	BaseURL  string   `json:"baseUrl"`
+	Protocol string   `json:"protocol,omitempty"` // ""|"openai" or "systemone"
+	APIKey   string   `json:"apiKey,omitempty"`
+	Models   []string `json:"models,omitempty"`
+	Model    string   `json:"model,omitempty"` // legacy; migrated into Models on load
+}
+
+func systemOneRoot(base string) string {
+	b := strings.TrimRight(base, "/")
+	b = strings.TrimSuffix(b, "/v1/systemone")
+	b = strings.TrimSuffix(b, "/v1")
+	return b
 }
 
 func (p Provider) defaultModel() string {
@@ -118,6 +126,9 @@ func ask(v *string, label, def string) string {
 }
 
 func fetchModels(p Provider) ([]string, error) {
+	if p.Protocol == "systemone" {
+		return fetchSystemOneModel(p)
+	}
 	c := &http.Client{Timeout: 30 * time.Second}
 	base := strings.TrimRight(p.BaseURL, "/")
 	req, err := http.NewRequest("GET", base+"/models", nil)
@@ -152,6 +163,36 @@ func fetchModels(p Provider) ([]string, error) {
 	}
 	slices.Sort(ids)
 	return ids, nil
+}
+
+func fetchSystemOneModel(p Provider) ([]string, error) {
+	c := &http.Client{Timeout: 15 * time.Second}
+	req, err := http.NewRequest("GET", systemOneRoot(p.BaseURL)+"/health", nil)
+	if err != nil {
+		return nil, err
+	}
+	if p.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+p.APIKey)
+	}
+	res, err := c.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	b, _ := io.ReadAll(io.LimitReader(res.Body, 64<<10))
+	if res.StatusCode >= 400 {
+		return nil, fmt.Errorf("HTTP %d: %s", res.StatusCode, strings.TrimSpace(string(b)))
+	}
+	var h struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(b, &h); err != nil {
+		return nil, err
+	}
+	if h.Model == "" {
+		return []string{"strands-decider-latest"}, nil
+	}
+	return []string{h.Model}, nil
 }
 
 func testConnection(p Provider, model string) error {
@@ -210,7 +251,15 @@ func providerAdd(c *Config, rest []string) int {
 		return 2
 	}
 	var p Provider
-	p.BaseURL = strings.TrimRight(ask(&p.BaseURL, "base URL", "http://localhost:11434/v1"), "/")
+	ask(&p.Protocol, "protocol (openai|systemone)", "openai")
+	if p.Protocol == "openai" {
+		p.Protocol = ""
+	}
+	defURL := "http://localhost:11434/v1"
+	if p.Protocol == "systemone" {
+		defURL = "http://localhost:8000"
+	}
+	p.BaseURL = strings.TrimRight(ask(&p.BaseURL, "base URL", defURL), "/")
 	ask(&p.APIKey, "api key (blank if none)", "")
 	var yes string
 	if strings.HasPrefix(strings.ToLower(ask(&yes, "test the connection now?", "y")), "y") {
@@ -256,7 +305,11 @@ func providerList(c Config) int {
 		if name == c.Active {
 			mark = "*"
 		}
-		fmt.Printf("%s %-12s %s\n", mark, name, p.BaseURL)
+		proto := ""
+		if p.Protocol != "" {
+			proto = " [" + p.Protocol + "]"
+		}
+		fmt.Printf("%s %-12s %s%s\n", mark, name, p.BaseURL, proto)
 		activeModel := c.activeModelFor(name, p)
 		for _, m := range p.Models {
 			mMark := " "

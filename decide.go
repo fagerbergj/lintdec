@@ -18,11 +18,13 @@ import (
 )
 
 type client struct {
-	base   string
-	model  string
-	apiKey string
-	temp   float64
-	httpc  *http.Client
+	base      string
+	protocol  string // ""|"openai" or "systemone"
+	model     string
+	apiKey    string
+	temp      float64
+	threshold float64
+	httpc     *http.Client
 }
 
 type Verdict struct {
@@ -48,8 +50,11 @@ type err429 struct{ msg string }
 func (e err429) Error() string { return e.msg }
 
 // call asks the model for one batch: every rule in the job against the unit.
-// Rules the model omits get one follow-up call.
+// OpenAI gets a follow-up for omitted rules; systemone answers all in one pass.
 func (c *client) call(ctx context.Context, j job) (map[string]Verdict, error) {
+	if c.protocol == "systemone" {
+		return c.callSystemOne(ctx, j)
+	}
 	out, missing, err := c.callOnce(ctx, j, "")
 	if err != nil {
 		return nil, err
@@ -84,6 +89,81 @@ func (c *client) call(ctx context.Context, j job) (map[string]Verdict, error) {
 				return nil, fmt.Errorf("model omitted %s even alone", id)
 			}
 			out[id] = out3[id]
+		}
+	}
+	return out, nil
+}
+
+func (c *client) callSystemOne(ctx context.Context, j job) (map[string]Verdict, error) {
+	var state strings.Builder
+	fmt.Fprintf(&state, "FILE: %s\nUNIT: %s, lines %d-%d\n", j.unit.File, j.unit.Kind, j.unit.Start, j.unit.End)
+	if j.unit.Context != "" {
+		fmt.Fprintf(&state, "SURROUNDING CONTEXT (reference only, do not lint it):\n%s\n", j.unit.Context)
+	}
+	fmt.Fprintf(&state, "TARGET:\n%s", j.unit.Text)
+
+	questions := make(map[string]map[string]string, len(j.rules))
+	for _, r := range j.rules {
+		questions[r.ID] = map[string]string{
+			"type":         "noul",
+			"instructions": fmt.Sprintf("Does the TARGET violate this rule? %s — %s. CRITERIA: %s", r.ID, r.Summary, r.Rubric),
+		}
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"model":     c.model,
+		"state":     state.String(),
+		"questions": questions,
+	})
+	req, err := http.NewRequestWithContext(ctx, "POST", systemOneRoot(c.base)+"/v1/systemone", bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	res, err := c.httpc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode == http.StatusTooManyRequests || res.StatusCode == http.StatusServiceUnavailable {
+		b, _ := io.ReadAll(io.LimitReader(res.Body, 200))
+		return nil, err429{strings.TrimSpace(string(b))}
+	}
+	if res.StatusCode >= 400 {
+		b, _ := io.ReadAll(io.LimitReader(res.Body, 400))
+		return nil, fmt.Errorf("HTTP %d: %s", res.StatusCode, strings.TrimSpace(string(b)))
+	}
+	var resp struct {
+		Answers map[string]struct {
+			Noul float64 `json:"noul"`
+		} `json:"answers"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&resp); err != nil {
+		return nil, err
+	}
+	thresh := c.threshold
+	if thresh <= 0 {
+		thresh = 0.75
+	}
+	out := make(map[string]Verdict, len(j.rules))
+	for _, r := range j.rules {
+		ans, ok := resp.Answers[r.ID]
+		if !ok {
+			return nil, fmt.Errorf("systemone response missing answer for %s", r.ID)
+		}
+		sev := "low"
+		if ans.Noul >= 0.9 {
+			sev = "high"
+		} else if ans.Noul >= thresh {
+			sev = "med"
+		}
+		out[r.ID] = Verdict{
+			Lint:       ans.Noul >= thresh,
+			Severity:   sev,
+			Confidence: ans.Noul,
+			Reason:     r.Summary,
 		}
 	}
 	return out, nil

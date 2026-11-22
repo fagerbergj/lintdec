@@ -32,6 +32,17 @@ lintdec model use google/gemini-2.5-pro
 
 When `--model <id>` is passed without `--provider`, `lintdec` picks the unique provider that lists that model (or falls back to the active provider).
 
+### Strands Decider (`/v1/systemone`)
+
+`lintdec` also supports [strands-decider](https://github.com/strands-labs/strands-decider) servers (`POST /v1/systemone`, calibrated `noul` probabilities in one forward pass):
+
+```sh
+strands-decider serve StrandsAgents/strands-decider-12B-gemma4-v1-2610 --port 8000
+lintdec provider add decider    # protocol: systemone, base URL: http://localhost:8000
+lintdec model decider
+lintdec --provider decider --threshold 0.75 .
+```
+
 Then lint:
 
 ```sh
