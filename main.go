@@ -58,12 +58,14 @@ Lint flags:
   --severity low        report findings at this severity or higher: low|med|high
   --out text            output: text|json|jsonl
   --provider name       provider name from the global config
-  --base-url URL        OpenAI-compatible base URL (overrides provider)
+  --base-url URL        API base URL (overrides provider)
+  --protocol PROTO      provider protocol: openai|systemone
   --model ID            model id (overrides provider)
   --api-key KEY         API key (overrides provider)
   --workers N           parallel model calls (default 8)
   --budget N            max model calls this run, 0 = unlimited
   --temperature 0       sampling temperature
+  --threshold 0.75      noul probability threshold for systemone providers
   --no-cache            bypass ~/.cache/lintdec/cache
   --no-ignore           report findings despite inline //lintdec:ignore
   --ledger FILE         append findings as JSONL to FILE as they are decided

@@ -152,3 +152,54 @@ func TestIsIgnoredAndLoadProjectConfig(t *testing.T) {
 		t.Errorf("unexpected project config: %+v warns=%v", pc, warns)
 	}
 }
+
+func TestSystemOneCallAndHealth(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/health":
+			json.NewEncoder(w).Encode(map[string]any{"status": "ok", "model": "strands-decider-12B-gemma4-v1-2610"})
+		case "/v1/systemone":
+			var body struct {
+				State     string                    `json:"state"`
+				Questions map[string]map[string]any `json:"questions"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("bad request body: %v", err)
+			}
+			if !strings.Contains(body.State, "TODO: fix") || len(body.Questions) != 2 {
+				t.Errorf("unexpected systemone payload: %+v", body)
+			}
+			json.NewEncoder(w).Encode(map[string]any{
+				"model": "strands-decider-12B-gemma4-v1-2610",
+				"answers": map[string]any{
+					"comment-long":  map[string]any{"type": "noul", "noul": 0.12},
+					"todo-no-owner": map[string]any{"type": "noul", "noul": 0.93},
+				},
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	models, err := fetchModels(Provider{BaseURL: srv.URL + "/v1", Protocol: "systemone"})
+	if err != nil || !slices.Equal(models, []string{"strands-decider-12B-gemma4-v1-2610"}) {
+		t.Fatalf("fetchModels systemone: %v %v", models, err)
+	}
+
+	r1, _ := findRule("comment-long")
+	r2, _ := findRule("todo-no-owner")
+	cl := &client{base: srv.URL, protocol: "systemone", model: models[0], threshold: 0.75, httpc: srv.Client()}
+	j := job{unit: Unit{Kind: "Comment", File: "a.go", Start: 1, End: 1, Text: "// TODO: fix"}, rules: []Rule{r1, r2}}
+	got, err := cl.call(context.Background(), j)
+	if err != nil {
+		t.Fatalf("systemone call error: %v", err)
+	}
+	if got["comment-long"].Lint {
+		t.Errorf("comment-long should be clean at 0.12: %+v", got["comment-long"])
+	}
+	v := got["todo-no-owner"]
+	if !v.Lint || v.Severity != "high" || v.Confidence != 0.93 || v.Reason != r2.Summary {
+		t.Errorf("unexpected todo-no-owner verdict: %+v", v)
+	}
+}
