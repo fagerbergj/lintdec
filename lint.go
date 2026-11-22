@@ -348,7 +348,14 @@ func firstNonEmpty(vals ...string) string {
 
 func filterRetryJobs(jobs []job) ([]job, bool, error) {
 	b, err := os.ReadFile(filepath.Join(".lintdec", "errored.json"))
-	if err != nil || len(b) == 0 {
+	if os.IsNotExist(err) {
+		fmt.Println("no errored checks to retry")
+		return nil, true, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if len(b) == 0 {
 		fmt.Println("no errored checks to retry")
 		return nil, true, nil
 	}
@@ -388,9 +395,10 @@ type poolResult struct {
 
 func runPool(ctx context.Context, jobs []job, o lintOpts, cl *client, ch *cache, prog *progress, linesCache map[string][]string, ledgerF *os.File) poolResult {
 	var (
-		mu        sync.Mutex
-		res       poolResult
-		callsUsed atomic.Int64
+		mu         sync.Mutex
+		res        poolResult
+		callsUsed  atomic.Int64
+		ledgerWarn atomic.Bool // first failed ledger write is logged once
 	)
 	runJob := func(j job) {
 		start := time.Now()
@@ -456,7 +464,9 @@ func runPool(ctx context.Context, jobs []job, o lintOpts, cl *client, ch *cache,
 			res.findings = append(res.findings, f)
 			if ledgerF != nil {
 				b, _ := json.Marshal(f)
-				ledgerF.Write(append(b, '\n'))
+				if _, werr := ledgerF.Write(append(b, '\n')); werr != nil && ledgerWarn.CompareAndSwap(false, true) {
+					fmt.Fprintf(os.Stderr, "warn: ledger write failed: %v\n", werr)
+				}
 			}
 			mu.Unlock()
 			prog.addFinding(f)

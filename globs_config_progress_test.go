@@ -156,7 +156,10 @@ func TestSelfUpdateVerifiesChecksumAndReplaces(t *testing.T) {
 	if err := selfUpdate(exe, srv.URL+"/latest", "linux", "amd64"); err != nil {
 		t.Fatalf("selfUpdate failed: %v", err)
 	}
-	got, _ := os.ReadFile(exe)
+	got, err := os.ReadFile(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if string(got) != string(payload) {
 		t.Errorf("binary not replaced: got %q", got)
 	}
@@ -175,5 +178,9 @@ func TestProgressSeverityTotals(t *testing.T) {
 	}
 	for range 12 {
 		p.tick(0, true, "x")
+	}
+	// quiet mode counts checks but never fires milestone lines
+	if p.done != 12 || p.milestone != 0 {
+		t.Errorf("done=%d milestone=%d, want 12/0", p.done, p.milestone)
 	}
 }
