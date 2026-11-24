@@ -114,8 +114,9 @@ func blockWords(block string) []blockWord {
 	return ws
 }
 
-// abbreviation: dotted letters ("e.g.", "U.S.", "a.m.") or an initial ("J."), which end no sentence.
-var abbreviation = regexp.MustCompile(`^(?:[A-Za-z]{1,3}\.){2,}$|^[A-Z]\.$`)
+// abbreviation: dotted letters ("e.g.", "U.S."), an initial ("J."), or a common short form ("Dr.", "vs."),
+// none of which ends a sentence; fusing two real sentences is safer than cutting one in half.
+var abbreviation = regexp.MustCompile(`^(?:[A-Za-z]{1,3}\.){2,}$|^[A-Z]\.$|^(?i:etc|vs|cf|approx|dr|mr|mrs|ms|jr|sr|inc|ltd|st|fig|no)\.$`)
 
 // endsSentence: word k ends in . ! or ? and the next word, if any, could start a sentence;
 // "etc. for pipes" continues because a lowercase word is no sentence start.

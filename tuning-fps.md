@@ -86,6 +86,9 @@ Judgment-only correction (2026-11-21): the numeric floors were removed — the 8
 
 ## Removed rules
 
-`complex-method` and `md-para-long` were removed after a self-lint run of lintdec at `78ebd21`. `complex-method` produced 14 of the run's 34 false positives (7 valid of 21), mostly long functions that still do one job; deterministic cyclomatic complexity (sloplint) covers the measurable part. `md-para-long` was 3 valid of 6 and kept flipping on dense single-topic paragraphs.
+Eight rules on the published `main` (`626ff5d`) are removed in the change that adds the sourced documentation rules:
 
-`md-hard-wrap`, `md-table-dense` and `md-jargon` were removed when the sourced documentation rules landed. `md-hard-wrap` is a line-length pattern a deterministic linter checks better; `md-table-dense` and `md-jargon` stayed far above 10% false and are replaced by rules that each cite a published style rule (`lintdec --list-rules` shows the source).
+- `complex-method` and `md-para-long`, after a self-lint run of lintdec at `78ebd21`. `complex-method` produced 14 of the run's 34 false positives (7 valid of 21), mostly long functions that still do one job; deterministic cyclomatic complexity (sloplint) covers the measurable part. `md-para-long` was 3 valid of 6 and kept flipping on dense single-topic paragraphs.
+- `comment-stale` and `comment-decision-record`, 0 of 17 valid across two self-lint runs: neither staleness nor decision-worthiness is visible in the comment's text. `comment-contradicts-code` (a contradiction visible in the shown code) and `comment-history` (narrated history) replace them.
+- `big-file`, replaced by `file-several-jobs`, which judges unrelated topics rather than size.
+- `md-hard-wrap`, a line-length pattern a deterministic linter checks better; and `md-table-dense` and `md-jargon`, which stayed far above 10% false. The sourced documentation rules replace them, each citing a published style rule (`lintdec --list-rules` shows the source).

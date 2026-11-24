@@ -185,6 +185,9 @@ func TestAbbreviationsDoNotEndSentences(t *testing.T) {
 		"The flag supports json, e.g. for pipes, and csv.": {"The flag supports json, e.g. for pipes, and csv."},
 		"Add logs, metrics, etc. to the dashboard first.":  {"Add logs, metrics, etc. to the dashboard first."},
 		"Ask J. Smith about the deploy window.":            {"Ask J. Smith about the deploy window."},
+		"Ask Dr. Smith about the deploy window.":           {"Ask Dr. Smith about the deploy window."},
+		"Compare Go vs. Rust in CI pipelines.":             {"Compare Go vs. Rust in CI pipelines."},
+		"See Fig. 3 for the full rollout plan.":            {"See Fig. 3 for the full rollout plan."},
 		"The build runs nightly. It takes an hour.":        {"The build runs nightly.", "It takes an hour."},
 		"Upgrade to version 1.2. Then restart it.":         {"Upgrade to version 1.2.", "Then restart it."},
 	} {
