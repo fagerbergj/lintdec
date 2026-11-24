@@ -34,6 +34,10 @@ jobs:
       # Gates only lines this change touches.
       - if: github.event_name == 'pull_request'
         run: go run ./tools/sloplint diff origin/${{ github.base_ref }}
+      # The runner's preinstalled Node has node:test; the extension has no dependencies to install.
+      - name: VS Code extension tests
+        working-directory: editors/vscode
+        run: node --test
 
   # Each green push to main cuts the next patch tag and publishes it with GoReleaser
   # in the same job (GITHUB_TOKEN tag pushes do not trigger separate workflows).

@@ -1,0 +1,25 @@
+{
+  "name": "lintdec",
+  "displayName": "lintdec",
+  "description": "Shows lintdec documentation findings as squiggles and in the Problems panel.",
+  "version": "0.1.1",
+  "publisher": "fagerbergj",
+  "license": "UNLICENSED",
+  "repository": "https://github.com/fagerbergj/lintdec",
+  "engines": { "vscode": "^1.90.0" },
+  "categories": ["Linters"],
+  "activationEvents": ["onLanguage:markdown"],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [{ "command": "lintdec.lintFile", "title": "lintdec: Lint current file" }],
+    "configuration": {
+      "title": "lintdec",
+      "properties": {
+        "lintdec.path": { "type": "string", "default": "lintdec", "description": "Path to the lintdec binary." },
+        "lintdec.runOnSave": { "type": "boolean", "default": true, "description": "Lint Markdown files when they are saved." },
+        "lintdec.runOnOpen": { "type": "boolean", "default": false, "description": "Lint Markdown files when they are opened. Each run makes model calls for paragraphs not already cached." }
+      }
+    }
+  },
+  "scripts": { "test": "node --test" }
+}

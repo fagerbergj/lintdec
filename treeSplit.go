@@ -36,13 +36,13 @@ var tsLangs = map[string]tsCfg{
 	"ts": {
 		"typescript", tsx.GetLanguage,
 		map[string]bool{"interface_declaration": true},
-		map[string]bool{"describe": true, "it": true, "test": true, "xit": true, "xdescribe": true, "xtest": true, "beforeEach": true, "afterEach": true, "beforeAll": true, "afterAll": true},
+		map[string]bool{"describe": true, "it": true, "test": true, "xit": true, "xdescribe": true, "xtest": true},
 		"",
 	},
 	"js": {
 		"javascript", javascript.GetLanguage,
 		nil,
-		map[string]bool{"describe": true, "it": true, "test": true, "xit": true, "xdescribe": true, "xtest": true, "beforeEach": true, "afterEach": true, "beforeAll": true, "afterAll": true},
+		map[string]bool{"describe": true, "it": true, "test": true, "xit": true, "xdescribe": true, "xtest": true},
 		"",
 	},
 	"py": {
@@ -110,14 +110,18 @@ func splitTree(path string, src []byte, cfg tsCfg) []Unit {
 	}
 	lines := strings.Split(string(src), "\n")
 	var units []Unit
-	docs := map[*sitter.Node]string{}
+	type docInfo struct {
+		text  string
+		start int
+	}
+	docs := map[*sitter.Node]docInfo{}
 
 	funcUnit := func(n *sitter.Node, kind string) Unit {
 		u := Unit{Kind: kind, File: path,
 			Start: int(n.StartPoint().Row) + 1, End: int(n.EndPoint().Row) + 1,
 			Text: n.Content(src)}
 		if d, ok := docs[n.PrevSibling()]; ok {
-			u.Context = d
+			u.Context, u.ContextStart = d.text, d.start
 		} else if d := pythonDocstring(n, src); d != "" {
 			u.Context = d
 		}
@@ -133,7 +137,8 @@ func splitTree(path string, src []byte, cfg tsCfg) []Unit {
 			t := c.Type()
 			if strings.Contains(t, "comment") {
 				if attachesDoc(c, cfg, src) {
-					docs[c] = docRun(c, src) // attach below, not emitted as a unit
+					text, start := docRun(c, src)
+					docs[c] = docInfo{text: text, start: start}
 				} else {
 					u, last := commentUnit(path, c, cfg, src, lines)
 					units = append(units, u)
@@ -248,8 +253,13 @@ func commentUnit(path string, first *sitter.Node, cfg tsCfg, src []byte, lines [
 
 // commentContext: +-8 non-blank surrounding lines with line numbers.
 func commentContext(lines []string, s, e int) string {
+	return numberedContext(lines, s-8, e+8, s, e)
+}
+
+// numberedContext: non-blank lines from..to with line numbers, skipping the target s..e.
+func numberedContext(lines []string, from, to, s, e int) string {
 	var ctx []string
-	for ln := s - 8; ln <= e+8; ln++ {
+	for ln := from; ln <= to; ln++ {
 		if ln < 1 || ln > len(lines) || (ln >= s && ln <= e) {
 			continue
 		}
@@ -336,7 +346,7 @@ func declName(n *sitter.Node, src []byte) string {
 
 // docRun: maximal run of consecutive comment siblings ending at n (n last),
 // doc markers stripped.
-func docRun(n *sitter.Node, src []byte) string {
+func docRun(n *sitter.Node, src []byte) (string, int) {
 	run := []*sitter.Node{n}
 	cur := n
 	for {
@@ -363,7 +373,7 @@ func docRun(n *sitter.Node, src []byte) string {
 		b.WriteString(line)
 		b.WriteString("\n")
 	}
-	return strings.TrimSpace(b.String())
+	return strings.TrimSpace(b.String()), int(cur.StartPoint().Row) + 1
 }
 
 // pythonDocstring: first string literal in a python function body.

@@ -1,147 +1,82 @@
 # lintdec
 
-A decision-model code linter. A deterministic splitter breaks your tree into units (functions, tests, interfaces, comment blocks, paragraphs, bullets, tables), and a local model decides, per unit, whether each rule's rubric is violated. Findings carry severity and a 0-1 confidence, and are sorted most-actionable first.
+lintdec uses a model to review code and Markdown for problems a pattern matcher can't judge, such as a test that cannot fail, a stale comment, or a sentence that buries a list. Documentation rules each enforce a published style rule; `--list-rules` shows the source. Findings are suggestions, not proof; review them before editing.
 
-It exists because some things a linter should catch are too subtle for pattern matching: a test that cannot fail, a comment describing code that no longer does that, an interface leaking its storage layer. Those are judgments. This runs the judgment on your own hardware against any OpenAI-compatible endpoint.
+## Build
 
-## Install
+From a checkout, with Go 1.27.3 or newer, cgo enabled, and a C compiler:
 
 ```sh
-cd lintdec
-go build -o ~/.local/bin/lintdec
+mkdir -p ~/.local/bin
+go build -o ~/.local/bin/lintdec .
 ```
 
-cgo + a C compiler are required to build (the tree-sitter grammars compile C at build time); the finished binary is self-contained. No runtime dependencies. First build compiles ~11 grammar C sources and takes a few minutes; later builds are fast.
+Add `~/.local/bin` to your `PATH` if needed.
 
-## First run
-
-Add a provider (endpoint + credentials), then pick a model (1:N providers to models):
+## Set up
 
 ```sh
 lintdec provider add
-# name [local]: clef
-# base URL [http://localhost:11434/v1]: http://127.0.0.1:11436/v1
-# api key (blank if none):
-# test the connection now? [y]:
-
-lintdec model clef                 # interactive picker (fetches /models, supports filter)
-lintdec model                      # pick from saved models across providers
-lintdec model add openrouter anthropic/claude-sonnet-4 google/gemini-2.5-pro
-lintdec model use google/gemini-2.5-pro
 ```
 
-When `--model <id>` is passed without `--provider`, `lintdec` picks the unique provider that lists that model (or falls back to the active provider).
+Choose **OpenRouter** and **Quick setup**. This selects the Jev decision-model setup and opens browser sign-in to create an API key. After a successful connection test, choose a model; press `/` to filter the list. To choose again, run `lintdec model openrouter` (use your provider name if different), or `lintdec model` for saved models. Set `LINTDEC_ACCESSIBLE=1` for plain prompts.
 
-### Strands Decider (`/v1/systemone`)
+OpenRouter sends the code and document text being checked to OpenRouter. Use it only if your data policy permits. New keys are stored in the OS keychain; plaintext keys in older configs are not automatically migrated.
 
-`lintdec` also supports [strands-decider](https://github.com/strands-labs/strands-decider) servers (`POST /v1/systemone`, calibrated `noul` probabilities in one forward pass):
+You can also use OpenAI or a local/custom endpoint. OpenRouter advanced setup supports chat models, existing keys, browser OIDC, and workload identity. See [authentication](docs/authentication.md) for setup, credential removal, and OIDC limits.
+
+## Run
+
+From the project you want to check:
 
 ```sh
-strands-decider serve StrandsAgents/strands-decider-12B-gemma4-v1-2610 --port 8000
-lintdec provider add decider    # protocol: systemone, base URL: http://localhost:8000
-lintdec model decider
-lintdec --provider decider --threshold 0.75 .
+lintdec .
 ```
 
-Then lint:
+A normal interactive run shows the top five findings; when there are more, the full report is saved in a private temporary file. Findings go to stdout; progress and cost go to stderr. For a saved report or a pipe:
 
 ```sh
-lintdec                        # current dir
-lintdec pkg/ docs/             # dirs
-lintdec 'pkg/**/*_test.go'     # glob positionals
-lintdec --rules flakey-test,tautology-test .
-lintdec --severity med --out jsonl pkg/ | jq -c .
+lintdec --out jsonl --quiet . > findings.jsonl
 ```
 
-Flags may go before or after paths. Precedence: flag > env (`LINTDEC_*`) > `lintdec.yaml` > `~/.config/lintdec/config.json`.
+Jev provides confidence, not a specific explanation or line: lintdec shows the rule summary and the start of the checked unit. Jev's high/med labels are based on confidence, not an independent assessment of impact.
 
-## Rules
-
-26 rules, list them with `lintdec --list-rules`.
-
-- **Tests:** `flakey-test`, `tautology-test`, `incomplete-assertion`, `wrong-assertion`, `test-except-pass`, `assert-self`
-- **Comments:** `comment-long`, `comment-tautology`, `comment-excuse`, `comment-stale`, `comment-decision-record`, `comment-hedge`, `comment-restates-name`, `todo-no-owner`
-- **Prose:** `md-para-long`, `md-jargon`, `md-hard-wrap`, `md-table-dense`
-- **Structure:** `iface-leaky`, `iface-god-method`, `complex-method`, `big-file`
-- **Implementation:** `name-mismatch`, `swallowed-error`, `stub-body`, `commented-code`
-
-Code languages are split with tree-sitter: Go (via `go/ast`), TypeScript, JavaScript, Python, Rust, Bash, Java, C, C++, C#, Kotlin, Swift. Markdown is always understood. Tests are recognized as `*_test.go`, `test_*` functions, and `test()/it()/describe()` blocks. Other languages contribute their markdown until their grammar is added (one entry in `treeSplit.go`).
+Use `lintdec --list-rules` to see rules, `lintdec --rules flakey-test,md-prose-list .` to run only those two, and `lintdec -h` for options. To suppress a finding, put `//lintdec:ignore flakey-test` (or `<!-- lintdec:ignore md-prose-list -->` in Markdown) within two lines above it; use `--no-ignore` to audit suppressions.
 
 ## Project policy: lintdec.yaml
 
-Committed per repo, found from the linted paths' common ancestor:
+Commit a `lintdec.yaml` to the repository; lintdec finds it from the linted paths' common ancestor. `on:` adds a rule to the default set and `off:` removes one; `lintdec --list-rules` marks which rules are on by default.
 
 ```yaml
-severity: med
+severity: warning
 rules:
-  - off: md-jargon
+  - on: md-idiom
+  - off: md-prose-list
 exclude:
   - '**/fixtures/**'
 ```
 
-Real example from quack:
+Settings resolve as flags, then `LINTDEC_*` environment variables, then `lintdec.yaml`, then `~/.config/lintdec/config.json`. Identity (URLs, API keys) never belongs in the yaml.
 
-```yaml
-exclude:
-  - '**/fixtures/**'
-  - '**/test-fixtures/**'
-```
-
-Identity (URLs, API keys) never belongs here — it lives in `~/.config/lintdec/config.json`. The yaml can only name providers/models.
-
-## Suppressing a finding
-
-Within 2 lines above the finding:
-
-```go
-//lintdec:ignore flakey-test  // the timer IS the test
-func TestDrainsUnderLoad(t *testing.T) {
-```
-
-`<!-- lintdec:ignore md-para-long -->` in markdown. `--no-ignore` audits suppressed findings.
-
-## Cache and re-runs
-
-Verdicts are cached per (unit, rule, model, temperature, prompt version) in `~/.cache/lintdec/cache`, keyed on absolute paths. Consequences:
-
-- Re-running is free; editing a file re-decides only that file.
-- Changing a rubric re-decides only the affected rule (the prompt hash is in the key).
-- Running `--rules a,b` then `--rules a` costs nothing the second time — checks, not batches, are cached.
-- `rm -rf ~/.cache/lintdec/cache` forces a full re-decide.
-
-## CI
-
-Exit codes: `0` clean, `1` findings at or above `--severity`, `2` error (all checks failed = broken provider).
+## Diff, budget, and CI
 
 ```sh
-lintdec --severity med --out jsonl --quiet . > findings.jsonl || cat findings.jsonl
-lintdec --retry-errors        # after a flaky network run: only the failed checks
+lintdec --diff origin/main
+lintdec --budget 100 --severity warning --out jsonl --quiet . > findings.jsonl
 ```
 
-`--budget N` caps model calls (dry-run guard); `--ledger FILE` appends findings as decided so a killed run loses nothing. Ctrl-C flushes findings and exits 130.
+`--diff` compares the working tree with the merge base, including untracked files not ignored by Git. It checks whole touched units, so findings can be on old lines; deletions can select adjacent units. Deleted files and symlinks are skipped, and an invalid or empty base fails.
 
-## Performance (measured, local 27B behind llama-swap)
+`--budget` caps inference requests, including retries and follow-ups, not dollars. An incomplete budget-limited run exits 2. Each rule has a fixed level (`error`, `warning`, or `info`); `--severity warning` reports warnings and errors. Each rule also has a confidence floor, and documentation rules ask their exception as a separate question; both were measured on Jev, so with a chat model the rules run on their floors alone. Cost is provider-reported, a known subtotal, or `unknown`; OpenRouter may omit separate BYOK charges. Cached checks can avoid model calls.
 
-- Small prose units: ~370-515 checks/min at the default 8 workers.
-- A 1,200-check repo: ~3.5 min cold, ~0s warm.
-- The gateway (llama-swap) 429s above ~8-16 concurrency; the built-in backoff absorbs bursts, but don't chase it — `--workers 8` is the measured sweet spot.
-- vLLM itself is fine with more queued requests; the limit is the gateway, not the GPU.
+Exit codes: `0` no findings at the chosen severity, `1` findings, `2` error or incomplete run, `130` interrupted. Some checks can fail even when the exit code is 0 or 1; check stderr. Ctrl-C flushes findings collected so far.
 
-## Calibration lab
+## Scope and safety
 
-`../lint-targets/dotagents/lab/` holds 26 seeded defects (one per rule) plus a clean twin, with the expected-findings ledger in `lab/planted.md`. Re-run after any rubric change:
+Normal directory scans do not apply `.gitignore`. Use `--exclude` or `lintdec.yaml` to keep files out; explicitly named files bypass include/exclude filters. Only supported source types and Markdown are scanned by default. Files over 1 MiB and Git worktree directories are skipped; pass explicit files for a worktree. Markdown front matter and fenced code are not checked as prose.
 
-```sh
-lintdec lint-targets/dotagents/lab --no-cache --out jsonl
-# expect: all 26 rules present, no rule outside the ledger
-```
+## Editor
 
-Last known state: 26/26 caught on two consecutive fresh runs, zero false positives, clean twin quiet.
+[editors/vscode](editors/vscode/README.md) shows findings in VS Code as squiggles and in the Problems panel.
 
-## Known limits
-
-- Model confidence clusters near 0.95 — fine as a gate, weak as a sort key.
-- Non-Go tree-sitter units are parser-accurate spans, but doc-comment attachment is a proximity heuristic; Go units are exact via `go/ast`.
-- `md-jargon` judges audience from the file; it is deliberately quiet on expert/operational notes and internal design docs.
-- Worktrees (`.git` file, not dir) are skipped with a warning to avoid duplicate findings; pass explicit files to lint one.
-- Tables, front matter, and code fences are not linted as prose.
+Reports and verdicts cached under `~/.cache/lintdec/cache` can contain sensitive information; protect them. Use `--no-cache` to bypass the cache, and don't put credentials in `lintdec.yaml`.

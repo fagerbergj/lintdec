@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 )
 
 // Set by CI with -ldflags "-X main.version=<sha>"; the release job pins each build by commit.
@@ -29,33 +30,49 @@ func main() {
 	case "version", "-v", "--version":
 		fmt.Println("lintdec " + version)
 		return
-	case "update":
-		os.Exit(updateCmd())
 	case "--list-rules":
-		for _, r := range rules {
-			fmt.Printf("%-24s %s\n", r.ID, r.Summary)
-		}
+		listRules()
 		return
 	}
 	os.Exit(lintCmd(args))
 }
 
+func listRules() {
+	interactive := terminal(os.Stdout)
+	if interactive {
+		fmt.Printf("\n  %s\n\n", paint("RULES", bold, colorEnabled(true)))
+	}
+	for _, r := range rules {
+		state := "on"
+		if defaultOff[r.ID] {
+			state = "off" // still runs when named with --rules or on: in lintdec.yaml
+		}
+		if interactive {
+			fmt.Printf("  %s  %-3s  %s\n  %s       %s\n", paint(padText(r.ID, 26), accent, colorEnabled(true)), state, cleanText(r.Summary), padText("", 26), paint(cleanText(r.Source), dim, colorEnabled(true)))
+		} else {
+			fmt.Printf("%-26s %-3s %s\t%s\n", r.ID, state, r.Summary, r.Source)
+		}
+	}
+}
+
 func usage() {
-	fmt.Fprint(os.Stderr, `lintdec — decision-model code linter
+	text := `lintdec — decision-model code and documentation linter
 
 Usage:
   lintdec [flags] <path>...        lint files, dirs, or glob patterns (default: .)
+  lintdec provider                 choose or add a provider
   lintdec provider [list|add|use|rm|test] ...
+  lintdec model                    choose a model
   lintdec model [provider|list|use|add|rm] ...
-  lintdec update                   download and install the latest release
   lintdec --list-rules             list rule ids
   lintdec -h                       this help
 
 Lint flags:
   --rules a,b,c         only these rules (default: all)
-  --include g1,g2       glob include filters (default: *.go,*.md)
+  --include g1,g2       glob include filters (default: supported code and Markdown)
   --exclude g1,g2       glob exclude filters
-  --severity low        report findings at this severity or higher: low|med|high
+  --diff REF            lint units changed since the merge base with REF
+  --severity info       report findings at this level or higher: info|warning|error
   --out text            output: text|json|jsonl
   --provider name       provider name from the global config
   --base-url URL        API base URL (overrides provider)
@@ -65,7 +82,7 @@ Lint flags:
   --workers N           parallel model calls (default 8)
   --budget N            max model calls this run, 0 = unlimited
   --temperature 0       sampling temperature
-  --threshold 0.75      noul probability threshold for systemone providers
+  --threshold 0.5       noul probability threshold for systemone providers; rules add their own floors
   --no-cache            bypass ~/.cache/lintdec/cache
   --no-ignore           report findings despite inline //lintdec:ignore
   --ledger FILE         append findings as JSONL to FILE as they are decided
@@ -75,6 +92,21 @@ Lint flags:
 
 Config: flags > env (LINTDEC_*) > lintdec.yaml (repo) > ~/.config/lintdec/config.json
 Inline suppression: //lintdec:ignore rule-id (applies to the next finding within 2 lines)
-Exit codes: 0 clean, 1 findings, 2 error
-`)
+Exit codes: 0 clean, 1 findings, 2 error or incomplete run
+`
+	if !terminal(os.Stderr) {
+		fmt.Fprint(os.Stderr, text)
+		return
+	}
+	color := colorEnabled(true)
+	for _, line := range strings.SplitAfter(text, "\n") {
+		switch {
+		case strings.HasPrefix(line, "lintdec —"):
+			fmt.Fprint(os.Stderr, paint(line, accent, color))
+		case line == "Usage:\n" || line == "Lint flags:\n":
+			fmt.Fprint(os.Stderr, paint(line, bold, color))
+		default:
+			fmt.Fprint(os.Stderr, line)
+		}
+	}
 }

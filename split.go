@@ -6,18 +6,21 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"regexp"
+	"slices"
 	"strings"
 )
 
-// Unit is one lintable slice of a file. Comments carry surrounding code as
-// Context because the judgment needs it; everything else is self-contained.
+// Unit is one lintable slice of a file. Context is reference-only text the judgment
+// needs: surrounding code for comments, the doc comment for declarations.
 type Unit struct {
-	Kind    string // TestFunction, Function, Interface, Comment, Paragraph, Bullet, File
-	File    string
-	Start   int
-	End     int
-	Text    string
-	Context string
+	Kind         string // TestFunction, Function, Interface, Comment, Paragraph, Bullet, File
+	File         string
+	Start        int
+	End          int
+	Text         string
+	Context      string
+	ContextStart int
 }
 
 // rawBudgetLines: units at or below this go to the model verbatim; above it,
@@ -62,18 +65,7 @@ func splitGo(path string, src []byte) []Unit {
 		units = append(units, Unit{Kind: kind, File: path, Start: s, End: e, Text: strings.Join(lines[s-1:e], "\n"), Context: ctx})
 	}
 
-	// File skeleton: one unit per Go file, declarations with line ranges.
-	var sk []string
-	sk = append(sk, fmt.Sprintf("file %s (lines 1-%d)", path, len(lines)))
-	for _, d := range f.Decls {
-		ln := fset.Position(d.Pos()).Line
-		first := strings.TrimSpace(lines[ln-1])
-		if len(first) > 120 {
-			first = first[:120] + " …"
-		}
-		sk = append(sk, fmt.Sprintf("%d\t%s", ln, first))
-	}
-	units = append(units, Unit{Kind: "File", File: path, Start: 1, End: len(lines), Text: strings.Join(sk, "\n")})
+	units = append(units, goSkeleton(fset, f, path, lines))
 
 	for _, d := range f.Decls {
 		switch d := d.(type) {
@@ -86,13 +78,21 @@ func splitGo(path string, src []byte) []Unit {
 			if d.Body != nil {
 				end = d.Body.End()
 			}
-			add(kind, d.Name.Pos(), end, "")
+			add(kind, d.Pos(), end, "")
+			if d.Doc != nil {
+				units[len(units)-1].ContextStart = fset.Position(d.Doc.Pos()).Line
+				units[len(units)-1].Context = strings.TrimSpace(d.Doc.Text())
+			}
 		case *ast.GenDecl:
 			for _, spec := range d.Specs {
 				ts, ok := spec.(*ast.TypeSpec)
 				if ok && ts.Type != nil {
 					if _, isIface := ts.Type.(*ast.InterfaceType); isIface {
 						add("Interface", ts.Pos(), ts.Type.End(), "")
+						if doc := specDoc(d, ts); doc != nil {
+							units[len(units)-1].ContextStart = fset.Position(doc.Pos()).Line
+							units[len(units)-1].Context = strings.TrimSpace(doc.Text())
+						}
 					}
 				}
 			}
@@ -100,36 +100,57 @@ func splitGo(path string, src []byte) []Unit {
 	}
 
 	for _, g := range f.Comments {
-		s, e := fset.Position(g.Pos()).Line, fset.Position(g.End()).Line
-		var ctx []string
-		for ln := s - 8; ln <= e+8; ln++ {
-			if ln < 1 || ln > len(lines) || (ln >= s && ln <= e) {
-				continue
-			}
-			if t := strings.TrimSpace(lines[ln-1]); t != "" {
-				ctx = append(ctx, fmt.Sprintf("%d\t%s", ln, lines[ln-1]))
-			}
-		}
-		add("Comment", g.Pos(), g.End(), strings.Join(ctx, "\n"))
+		add("Comment", g.Pos(), g.End(), goCommentContext(fset, f, lines, g))
 	}
 	return units
+}
+
+// goSkeleton: one unit per Go file listing declarations with line numbers.
+func goSkeleton(fset *token.FileSet, f *ast.File, path string, lines []string) Unit {
+	sk := []string{fmt.Sprintf("file %s (lines 1-%d)", path, len(lines))}
+	for _, d := range f.Decls {
+		ln := fset.Position(d.Pos()).Line
+		first := strings.TrimSpace(lines[ln-1])
+		if len(first) > 120 {
+			first = first[:120] + " …"
+		}
+		sk = append(sk, fmt.Sprintf("%d\t%s", ln, first))
+	}
+	return Unit{Kind: "File", File: path, Start: 1, End: len(lines), Text: strings.Join(sk, "\n")}
+}
+
+// specDoc: a lone spec in a parenthesis-free declaration inherits the declaration's doc.
+func specDoc(d *ast.GenDecl, ts *ast.TypeSpec) *ast.CommentGroup {
+	if ts.Doc == nil && len(d.Specs) == 1 {
+		return d.Doc
+	}
+	return ts.Doc
+}
+
+// goCommentContext: a comment in or above a declaration also sees all of it, so
+// claims about code past the 8-line window can be checked.
+func goCommentContext(fset *token.FileSet, f *ast.File, lines []string, g *ast.CommentGroup) string {
+	s, e := fset.Position(g.Pos()).Line, fset.Position(g.End()).Line
+	for _, d := range f.Decls {
+		start := d.Pos()
+		if fd, ok := d.(*ast.FuncDecl); ok && fd.Doc != nil {
+			start = fd.Doc.Pos()
+		} else if gd, ok := d.(*ast.GenDecl); ok && gd.Doc != nil {
+			start = gd.Doc.Pos()
+		}
+		ds, de := fset.Position(start).Line, min(fset.Position(d.End()).Line, len(lines))
+		if ds <= s && e <= de && de-ds <= rawBudgetLines {
+			return numberedContext(lines, min(ds, s-8), max(de, e+8), s, e)
+		}
+	}
+	return commentContext(lines, s, e)
 }
 
 func splitMarkdown(path string, src []byte) []Unit {
 	lines := strings.Split(string(src), "\n")
 	var units []Unit
-	// YAML front matter at the top of the file is metadata, not prose
-	start := 0
-	if len(lines) > 0 && strings.TrimSpace(lines[0]) == "---" {
-		for i := 1; i < len(lines); i++ {
-			if t := strings.TrimSpace(lines[i]); t == "---" || t == "..." {
-				start = i + 1
-				break
-			}
-		}
-	}
 	fence := false
-	i, n := start, len(lines)
+	i, n := frontMatterEnd(lines), len(lines)
 	for i < n {
 		t := strings.TrimSpace(lines[i])
 		if strings.HasPrefix(t, "```") {
@@ -141,43 +162,209 @@ func splitMarkdown(path string, src []byte) []Unit {
 			i++
 			continue
 		}
-		start := i
+		start, kind := i, mdKind(t)
 		switch {
-		case strings.HasPrefix(t, "|"):
-			// table block: first-class unit; only table rules may apply
-			for i < n && strings.HasPrefix(strings.TrimSpace(lines[i]), "|") {
-				i++
-			}
-			units = append(units, Unit{Kind: "Table", File: path, Start: start + 1, End: i, Text: strings.Join(lines[start:i], "\n")})
-			continue
+		case strings.HasPrefix(t, "|"): // table block: first-class unit; only table rules may apply
+			i, kind = blockEnd(lines, i, func(l string) bool { return !strings.HasPrefix(strings.TrimSpace(l), "|") }), "Table"
 		case isBullet(t):
-			for i < n {
-				t2 := strings.TrimSpace(lines[i])
-				if t2 == "" || strings.HasPrefix(t2, "#") || strings.HasPrefix(t2, "```") ||
-					(!isBullet(t2) && !isIndented(lines[i])) {
-					break
-				}
-				i++
-			}
+			i = blockEnd(lines, i, func(l string) bool { return blockBreak(l) || (!isBullet(strings.TrimSpace(l)) && !isIndented(l)) })
 		default:
-			for i < n {
-				t2 := strings.TrimSpace(lines[i])
-				if t2 == "" || strings.HasPrefix(t2, "#") || isBullet(t2) || strings.HasPrefix(t2, "```") {
-					break
-				}
-				i++
-			}
+			i = blockEnd(lines, i, func(l string) bool { return blockBreak(l) || isBullet(strings.TrimSpace(l)) })
 		}
-		units = append(units, Unit{Kind: mdKind(isBullet(strings.TrimSpace(lines[start]))), File: path, Start: start + 1, End: i, Text: strings.Join(lines[start:i], "\n")})
+		units = append(units, Unit{Kind: kind, File: path, Start: start + 1, End: i, Text: strings.Join(lines[start:i], "\n")})
+	}
+	return addMarkdownStructure(path, lines, units)
+}
+
+// frontMatterEnd: the first line after YAML front matter, which is metadata, not prose.
+func frontMatterEnd(lines []string) int {
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
+		return 0
+	}
+	for i := 1; i < len(lines); i++ {
+		if t := strings.TrimSpace(lines[i]); t == "---" || t == "..." {
+			return i + 1
+		}
+	}
+	return 0
+}
+
+// blockEnd: the first line from i that stops the block.
+func blockEnd(lines []string, i int, stop func(string) bool) int {
+	for i < len(lines) && !stop(lines[i]) {
+		i++
+	}
+	return i
+}
+
+// blockBreak: a blank line, heading, or fence ends any prose block.
+func blockBreak(l string) bool {
+	t := strings.TrimSpace(l)
+	return t == "" || strings.HasPrefix(t, "#") || strings.HasPrefix(t, "```")
+}
+
+// mdWholeLines caps Section and Document units, which are always sent whole.
+// shortcut: longer ones are skipped, upgrade to an outline digest if big docs matter.
+const mdWholeLines = 400
+
+type mdHeading struct{ level, line int }
+
+// addMarkdownStructure gives each block its heading path, previous block, and next line,
+// and adds a Section unit per H2+ heading and one Document unit per file.
+func addMarkdownStructure(path string, lines []string, units []Unit) []Unit {
+	heads, paths := headingPaths(lines)
+	units = slices.DeleteFunc(units, notAuthorProse)
+	header := docHeader(lines)
+	for k := range units {
+		u := &units[k]
+		ctx := header + "\nHEADING: " + paths[u.Start]
+		if k == 0 {
+			ctx += "\nPOSITION: first block of the document"
+		}
+		if k > 0 && paths[units[k-1].Start] == paths[u.Start] {
+			ctx += "\nPREVIOUS BLOCK:\n" + units[k-1].Text
+		}
+		if next := nextLine(lines, u.End); next != "" {
+			ctx += "\nNEXT LINE: " + next
+		}
+		u.Context = ctx
+	}
+	prose := slices.DeleteFunc(slices.Clone(units), func(u Unit) bool { return u.Kind != "Paragraph" && u.Kind != "Bullet" && u.Kind != "Steps" })
+	var outline []string
+	for _, h := range heads {
+		outline = append(outline, strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(lines[h.line-1]), "#")))
+	}
+	for _, u := range prose {
+		units = append(units, candidateUnits(u, header, paths[u.Start], strings.Join(outline, " | "))...)
+		if m, ok := mixedList(u); ok && u.Kind != "Paragraph" {
+			units = append(units, m)
+		}
+	}
+	text := proseLines(lines)
+	units = append(units, sectionUnits(path, text, heads, header)...)
+	if len(units) > 0 && len(lines) < mdWholeLines {
+		units = append(units, Unit{Kind: "Document", File: path, Start: 1, End: len(lines), Text: strings.Join(text, "\n"), Context: header})
 	}
 	return units
 }
 
-func mdKind(bullet bool) string {
-	if bullet {
-		return "Bullet"
+// proseLines blanks front matter and fenced code, keeping line count so line numbers still hold.
+func proseLines(lines []string) []string {
+	out := slices.Clone(lines)
+	fence, meta := false, frontMatterEnd(lines)
+	for i := range out {
+		if strings.HasPrefix(strings.TrimSpace(out[i]), "```") {
+			fence = !fence
+			out[i] = ""
+		} else if fence || i < meta {
+			out[i] = ""
+		}
 	}
-	return "Paragraph"
+	return out
+}
+
+// headingPaths: the headings outside code fences, and the "A > B" heading path in force at each line.
+func headingPaths(lines []string) ([]mdHeading, []string) {
+	var heads []mdHeading
+	paths := make([]string, len(lines)+1)
+	var stack []string
+	fence := false
+	for i, l := range lines {
+		t := strings.TrimSpace(l)
+		if strings.HasPrefix(t, "```") {
+			fence = !fence
+		}
+		if lvl := len(t) - len(strings.TrimLeft(t, "#")); !fence && lvl > 0 && lvl <= 6 && strings.HasPrefix(t[lvl:], " ") {
+			heads = append(heads, mdHeading{lvl, i + 1})
+			stack = append(stack[:min(len(stack), lvl-1)], strings.TrimSpace(t[lvl:]))
+			for len(stack) < lvl {
+				stack = append([]string{""}, stack...)
+			}
+		}
+		paths[i+1] = strings.Join(slices.DeleteFunc(slices.Clone(stack), func(x string) bool { return x == "" }), " > ")
+	}
+	return heads, paths
+}
+
+// notAuthorProse: comment-only blocks, rules (---), and blockquotes (quoted speech, callouts).
+func notAuthorProse(u Unit) bool {
+	t := strings.TrimSpace(htmlComment.ReplaceAllString(u.Text, ""))
+	return t == "" || strings.Trim(t, "-*_ ") == "" || !slices.ContainsFunc(strings.Split(t, "\n"), func(l string) bool { return !strings.HasPrefix(strings.TrimSpace(l), ">") })
+}
+
+func nextLine(lines []string, from int) string {
+	for j := from; j < len(lines); j++ {
+		if t := strings.TrimSpace(lines[j]); t != "" {
+			return t
+		}
+	}
+	return ""
+}
+
+// sectionUnits: one unit per filled H2+ section, up to the next heading at its level or above.
+// lines has code blanked, so a section that is only a fenced block reads as a placeholder: nothing to judge.
+func sectionUnits(path string, lines []string, heads []mdHeading, header string) []Unit {
+	var units []Unit
+	for k, h := range heads {
+		if h.level < 2 {
+			continue
+		}
+		end := len(lines)
+		if n := slices.IndexFunc(heads[k+1:], func(n mdHeading) bool { return n.level <= h.level }); n >= 0 {
+			end = heads[k+1+n].line - 1
+		}
+		for end > h.line && strings.TrimSpace(lines[end-1]) == "" {
+			end--
+		}
+		if end > h.line && end-h.line < mdWholeLines && !placeholderBody(lines[h.line:end]) {
+			units = append(units, Unit{Kind: "Section", File: path, Start: h.line, End: end, Text: strings.Join(lines[h.line-1:end], "\n"), Context: header})
+		}
+	}
+	return units
+}
+
+// mdKind: a list starting "1." is Steps, so step rules skip plain bullets.
+func mdKind(first string) string {
+	switch {
+	case !isBullet(first):
+		return "Paragraph"
+	case first[0] >= '0' && first[0] <= '9':
+		return "Steps"
+	}
+	return "Bullet"
+}
+
+var htmlComment = regexp.MustCompile(`(?s)<!--.*?-->`)
+
+// docHeader: the title and status every Markdown unit is judged against.
+func docHeader(lines []string) string {
+	title, status := "", ""
+	if len(lines) > 0 && strings.TrimSpace(lines[0]) == "---" {
+		for _, l := range lines[1:] {
+			t := strings.TrimSpace(l)
+			if t == "---" || t == "..." {
+				break
+			}
+			if k, v, ok := strings.Cut(t, ":"); ok {
+				switch strings.ToLower(k) {
+				case "title":
+					title = strings.Trim(strings.TrimSpace(v), `"'`)
+				case "status":
+					status = strings.Trim(strings.TrimSpace(v), `"'`)
+				}
+			}
+		}
+	}
+	for _, l := range lines {
+		if t := strings.TrimSpace(l); title == "" && strings.HasPrefix(t, "# ") {
+			title = strings.TrimSpace(t[2:])
+		}
+	}
+	h := "DOCUMENT TITLE: " + title
+	if status != "" {
+		h += "\nDOCUMENT STATUS: " + status
+	}
+	return h
 }
 
 func isBullet(t string) bool {
@@ -230,4 +417,57 @@ func digestFor(u Unit, lines []string) string {
 		}
 	}
 	return strings.Join(out, "\n")
+}
+
+var (
+	commentMarker = regexp.MustCompile(`^\s*(//+|#+|/\*+|\*+/?|--|;+)\s?`)
+	ruleLine      = regexp.MustCompile(`^[^\p{L}\p{N}]{3,}$`)
+	toolDirective = regexp.MustCompile(`^(shellcheck|eslint|prettier-ignore|@ts-|nolint|noqa|go:|lint:|pylint|type: ?ignore|istanbul|c8 |biome-ignore|ktlint|tslint|jshint|NOSONAR|region|endregion)`)
+)
+
+// structuralComment: section banners and tool directives look like comments but say nothing to lint,
+// and Jev flags them as tautologies.
+func structuralComment(u Unit) bool {
+	if u.Kind != "Comment" {
+		return false
+	}
+	var rules, directives, titles int
+	for _, line := range strings.Split(u.Text, "\n") {
+		t := strings.TrimSpace(commentMarker.ReplaceAllString(line, ""))
+		switch {
+		case t == "" || ruleLine.MatchString(t):
+			rules++
+		case toolDirective.MatchString(t):
+			directives++
+		case len(strings.Fields(t)) <= 5:
+			titles++
+		default:
+			return false
+		}
+	}
+	return directives > 0 || (rules > 0 && titles <= 1 && strings.TrimSpace(u.Text) != "")
+}
+
+// placeholderLine: a line that only says the content is missing ("TBD", "N/A", "TODO: ABC-123").
+var placeholderLine = regexp.MustCompile(`(?i)^[-*+_(\s]*(tbd|tba|todo|n/?a|wip|coming soon|to be (?:determined|added|written))\b[\s.:!)*_-]*(?:[a-z]+-\d+)?[\s.)*_]*$`)
+
+// placeholderBody: an unfilled template section (comments, empty tables, sub-headings only) has nothing to judge yet.
+func placeholderBody(body []string) bool {
+	text := htmlComment.ReplaceAllString(strings.Join(body, "\n"), "")
+	header := true
+	for _, l := range strings.Split(text, "\n") {
+		t := strings.TrimSpace(l)
+		switch {
+		case strings.Trim(t, "-*+ ") == "", strings.HasPrefix(t, "#"), placeholderLine.MatchString(t): // blank, bare bullet, heading, or TBD
+		case strings.HasPrefix(t, "|"):
+			if strings.Trim(t, "|-: ") == "" {
+				header = false // separator row; rows after it are data
+			} else if !header && strings.Trim(t, "| ") != "" {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }

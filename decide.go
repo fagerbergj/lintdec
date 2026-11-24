@@ -10,10 +10,12 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -22,17 +24,56 @@ type client struct {
 	protocol  string // ""|"openai" or "systemone"
 	model     string
 	apiKey    string
+	source    authSource
+	trustCost bool
+	costs     *costAccumulator
+	budget    *requestBudget
 	temp      float64
 	threshold float64
+	calibrate bool
 	httpc     *http.Client
 }
 
+var errBudgetExhausted = errors.New("model request budget exhausted")
+
+type requestBudget struct {
+	limit int64
+	used  atomic.Int64
+}
+
+func (b *requestBudget) take() bool {
+	if b == nil || b.limit <= 0 {
+		return true
+	}
+	for {
+		used := b.used.Load()
+		if used >= b.limit {
+			return false
+		}
+		if b.used.CompareAndSwap(used, used+1) {
+			return true
+		}
+	}
+}
+
+func (c *client) cacheModel() string {
+	return c.base + "|" + c.protocol + "|" + c.model
+}
+
+func (c *client) cacheTemp() string {
+	if c.protocol == "systemone" {
+		return fmt.Sprintf("systemone:%.3f", c.threshold)
+	}
+	return fmt.Sprintf("%v", c.temp)
+}
+
 type Verdict struct {
-	Lint       bool    `json:"lint"`
-	Severity   string  `json:"severity"`
-	Confidence float64 `json:"confidence"`
-	Line       *int    `json:"line"`
-	Reason     string  `json:"reason"`
+	Lint       bool     `json:"lint"`
+	Severity   string   `json:"severity"`
+	Confidence float64  `json:"confidence"`
+	Line       *int     `json:"line"`
+	Reason     string   `json:"reason"`
+	Veto       *float64 `json:"veto,omitempty"` // probability the rule's exception applies
 }
 
 const systemPrompt = `You are a strict code linter. Each call gives you one TARGET and a numbered list of rules.
@@ -102,81 +143,100 @@ func (c *client) callSystemOne(ctx context.Context, j job) (map[string]Verdict, 
 	}
 	fmt.Fprintf(&state, "TARGET:\n%s", j.unit.Text)
 
-	questions := make(map[string]map[string]string, len(j.rules))
-	for _, r := range j.rules {
-		questions[r.ID] = map[string]string{
-			"type":         "noul",
-			"instructions": fmt.Sprintf("Does the TARGET violate this rule? %s — %s. CRITERIA: %s", r.ID, r.Summary, r.Rubric),
-		}
-	}
 	payload, _ := json.Marshal(map[string]any{
 		"model":     c.model,
 		"state":     state.String(),
-		"questions": questions,
+		"questions": systemOneQuestions(withVetoes(j.rules)),
 	})
 	req, err := http.NewRequestWithContext(ctx, "POST", systemOneRoot(c.base)+"/v1/systemone", bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if c.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	if err := authorizeRequest(req, c.source, c.apiKey); err != nil {
+		return nil, err
 	}
-	res, err := c.httpc.Do(req)
+	if !c.budget.take() {
+		return nil, errBudgetExhausted
+	}
+	var usage *systemOneUsage
+	if c.costs != nil {
+		defer func() { c.costs.recordSystemOne(usage, c.trustCost) }()
+	}
+	res, err := sendRequest(c.httpc, req, c.source != nil || c.apiKey != "")
 	if err != nil {
 		return nil, err
 	}
 	defer res.Body.Close()
 	if res.StatusCode == http.StatusTooManyRequests || res.StatusCode == http.StatusServiceUnavailable {
-		b, _ := io.ReadAll(io.LimitReader(res.Body, 200))
-		return nil, err429{strings.TrimSpace(string(b))}
+		return nil, err429{responseError(res, c.source, c.apiKey)}
 	}
-	if res.StatusCode >= 400 {
-		b, _ := io.ReadAll(io.LimitReader(res.Body, 400))
-		return nil, fmt.Errorf("HTTP %d: %s", res.StatusCode, strings.TrimSpace(string(b)))
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return nil, errors.New(responseError(res, c.source, c.apiKey))
 	}
 	var resp struct {
 		Answers map[string]struct {
-			Noul float64 `json:"noul"`
+			Noul *float64 `json:"noul"`
 		} `json:"answers"`
+		Usage *systemOneUsage `json:"usage"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&resp); err != nil {
 		return nil, err
 	}
-	thresh := c.threshold
+	usage = resp.Usage
+	probs := make(map[string]*float64, len(resp.Answers))
+	for id, a := range resp.Answers {
+		probs[id] = a.Noul
+	}
+	v, err := systemOneVerdicts(withVetoes(j.rules), probs, c.threshold)
+	if err != nil {
+		return nil, err
+	}
+	return attachVetoes(j.rules, v), nil
+}
+
+// systemOneQuestions: one yes/no question per rule; exception questions are asked as written.
+func systemOneQuestions(rules []Rule) map[string]map[string]string {
+	questions := make(map[string]map[string]string, len(rules))
+	for _, r := range rules {
+		instructions := fmt.Sprintf("Does the TARGET violate this rule? %s — %s. CRITERIA: %s", r.ID, r.Summary, r.Rubric)
+		if r.Scope == "question" {
+			instructions = r.Rubric
+		}
+		questions[r.ID] = map[string]string{"type": "noul", "instructions": instructions}
+	}
+	return questions
+}
+
+// systemOneVerdicts turns Jev's probabilities into verdicts; every rule needs a valid one.
+func systemOneVerdicts(rules []Rule, probs map[string]*float64, thresh float64) (map[string]Verdict, error) {
 	if thresh <= 0 {
 		thresh = 0.75
 	}
-	out := make(map[string]Verdict, len(j.rules))
-	for _, r := range j.rules {
-		ans, ok := resp.Answers[r.ID]
-		if !ok {
-			return nil, fmt.Errorf("systemone response missing answer for %s", r.ID)
+	out := make(map[string]Verdict, len(rules))
+	for _, r := range rules {
+		p := probs[r.ID]
+		if p == nil || math.IsNaN(*p) || math.IsInf(*p, 0) || *p < 0 || *p > 1 {
+			return nil, fmt.Errorf("systemone response missing or invalid probability for %s", r.ID)
 		}
 		sev := "low"
-		if ans.Noul >= 0.9 {
+		if *p >= 0.9 {
 			sev = "high"
-		} else if ans.Noul >= thresh {
+		} else if *p >= thresh {
 			sev = "med"
 		}
-		out[r.ID] = Verdict{
-			Lint:       ans.Noul >= thresh,
-			Severity:   sev,
-			Confidence: ans.Noul,
-			Reason:     r.Summary,
-		}
+		out[r.ID] = Verdict{Lint: *p >= thresh, Severity: sev, Confidence: *p, Reason: r.Summary}
 	}
 	return out, nil
 }
 
-func (c *client) callOnce(ctx context.Context, j job, followUp string) (map[string]Verdict, []string, error) {
-	var rubric strings.Builder
-	for i, r := range j.rules {
-		fmt.Fprintf(&rubric, "%d. %s — %s\n   CRITERIA: %s\n", i+1, r.ID, r.Summary, r.Rubric)
-	}
+// chatPrompt: the user message for one batch, the rules first and the unit last.
+func chatPrompt(j job, followUp string) string {
 	var sb strings.Builder
 	sb.WriteString("RULES:\n")
-	sb.WriteString(rubric.String())
+	for i, r := range j.rules {
+		fmt.Fprintf(&sb, "%d. %s — %s\n   CRITERIA: %s\n", i+1, r.ID, r.Summary, r.Rubric)
+	}
 	sb.WriteString("\n")
 	fmt.Fprintf(&sb, "FILE: %s\nUNIT: %s, lines %d-%d\n", j.unit.File, j.unit.Kind, j.unit.Start, j.unit.End)
 	if j.unit.Context != "" {
@@ -187,36 +247,56 @@ func (c *client) callOnce(ctx context.Context, j job, followUp string) (map[stri
 		sb.WriteByte('\n')
 		sb.WriteString(followUp)
 	}
-	payload, _ := json.Marshal(map[string]any{
+	return sb.String()
+}
+
+func (c *client) callOnce(ctx context.Context, j job, followUp string) (map[string]Verdict, []string, error) {
+	body := map[string]any{
 		"model": c.model, "temperature": c.temp, "max_tokens": 600,
 		"chat_template_kwargs": map[string]any{"enable_thinking": false},
 		"messages": []map[string]string{
 			{"role": "system", "content": systemPrompt},
-			{"role": "user", "content": sb.String()},
+			{"role": "user", "content": chatPrompt(j, followUp)},
 		},
-	})
+	}
+	payload, _ := json.Marshal(body)
 	req, err := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(c.base, "/")+"/chat/completions", bytes.NewReader(payload))
 	if err != nil {
 		return nil, nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if c.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	if err := authorizeRequest(req, c.source, c.apiKey); err != nil {
+		return nil, nil, err
 	}
-	res, err := c.httpc.Do(req)
+	if !c.budget.take() {
+		return nil, nil, errBudgetExhausted
+	}
+	var usage *chatUsage
+	if c.costs != nil {
+		defer func() { c.costs.recordChat(usage, c.trustCost) }()
+	}
+	res, err := sendRequest(c.httpc, req, c.source != nil || c.apiKey != "")
 	if err != nil {
 		return nil, nil, err
 	}
 	defer res.Body.Close()
 	if res.StatusCode == http.StatusTooManyRequests {
-		b, _ := io.ReadAll(io.LimitReader(res.Body, 200))
-		return nil, nil, err429{strings.TrimSpace(string(b))}
+		return nil, nil, err429{responseError(res, c.source, c.apiKey)}
 	}
-	if res.StatusCode >= 400 {
-		b, _ := io.ReadAll(io.LimitReader(res.Body, 400))
-		return nil, nil, fmt.Errorf("HTTP %d: %s", res.StatusCode, strings.TrimSpace(string(b)))
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return nil, nil, errors.New(responseError(res, c.source, c.apiKey))
 	}
+	raw, err := decodeCompletion(res.Body, &usage)
+	if err != nil {
+		return nil, nil, err
+	}
+	return parseVerdicts(raw, j)
+}
+
+// decodeCompletion returns the first choice's text, falling back to reasoning-only replies.
+func decodeCompletion(body io.Reader, usage **chatUsage) (string, error) {
 	var out struct {
+		Usage   *chatUsage `json:"usage"`
 		Choices []struct {
 			Message struct {
 				Content   *string `json:"content"`
@@ -224,19 +304,19 @@ func (c *client) callOnce(ctx context.Context, j job, followUp string) (map[stri
 			} `json:"message"`
 		} `json:"choices"`
 	}
-	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
-		return nil, nil, err
+	if err := json.NewDecoder(body).Decode(&out); err != nil {
+		return "", err
 	}
+	*usage = out.Usage
 	if len(out.Choices) == 0 {
-		return nil, nil, errors.New("empty completion")
+		return "", errors.New("empty completion")
 	}
-	raw := ""
-	if out.Choices[0].Message.Content != nil {
-		raw = *out.Choices[0].Message.Content
-	} else if out.Choices[0].Message.Reasoning != nil {
-		raw = *out.Choices[0].Message.Reasoning
+	if m := out.Choices[0].Message; m.Content != nil {
+		return *m.Content, nil
+	} else if m.Reasoning != nil {
+		return *m.Reasoning, nil
 	}
-	return parseVerdicts(raw, j)
+	return "", nil
 }
 
 // parseVerdicts extracts the rule-id → verdict map. It returns the verdicts
@@ -351,7 +431,7 @@ func runWithRetry(ctx context.Context, c *client, j job) (map[string]Verdict, er
 			}
 		}
 		v, err = c.call(ctx, j)
-		if err == nil || ctx.Err() != nil {
+		if err == nil || errors.Is(err, errBudgetExhausted) || ctx.Err() != nil {
 			break
 		}
 	}

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	iofs "io/fs"
@@ -38,7 +39,7 @@ func reorderArgs(args []string) []string {
 		"rules": true, "severity": true, "out": true, "provider": true, "base-url": true,
 		"protocol": true, "threshold": true,
 		"model": true, "api-key": true, "workers": true, "budget": true, "temperature": true,
-		"ledger": true, "include": true, "exclude": true,
+		"ledger": true, "include": true, "exclude": true, "diff": true,
 	}
 	var flags, pos []string
 	for i := 0; i < len(args); i++ {
@@ -97,12 +98,23 @@ func defaultInclude() []string {
 }
 
 func walkRoot(root string, fn func(string)) {
+	ignored := gitIgnored(root)
 	filepath.WalkDir(root, func(p string, d iofs.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
+		if p != root && ignored[p] {
+			if d.IsDir() {
+				fmt.Fprintf(os.Stderr, "skip: %s/ (git-ignored)\n", filepath.ToSlash(p))
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		if d.IsDir() {
 			if p != root && skipDirs[filepath.Base(p)] {
+				if d.Name() != ".git" {
+					fmt.Fprintf(os.Stderr, "skip: %s/ (always skipped)\n", filepath.ToSlash(p))
+				}
 				return filepath.SkipDir
 			}
 			if isWorktree(p) {
@@ -114,6 +126,22 @@ func walkRoot(root string, fn func(string)) {
 		fn(p)
 		return nil
 	})
+}
+
+// gitIgnored: untracked paths under root that git ignores, keyed like WalkDir paths.
+// Outside a git checkout it is empty, so only skipDirs apply.
+func gitIgnored(root string) map[string]bool {
+	out, err := gitOutput(root, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z")
+	if err != nil {
+		return nil
+	}
+	ignored := map[string]bool{}
+	for _, name := range strings.Split(string(out), "\x00") {
+		if name != "" {
+			ignored[filepath.Join(root, filepath.FromSlash(strings.TrimSuffix(name, "/")))] = true
+		}
+	}
+	return ignored
 }
 
 // collectFiles turns positional args (files, dirs, or glob patterns) into a
@@ -181,7 +209,7 @@ func buildJobs(u Unit, active []Rule, lines []string) []job {
 	if len(app) == 0 {
 		return nil
 	}
-	if u.Kind == "File" || u.End-u.Start+1 <= rawBudgetLines {
+	if u.Kind == "File" || u.Kind == "Section" || u.Kind == "Document" || u.End-u.Start+1 <= rawBudgetLines {
 		return []job{{u, app}}
 	}
 	var local, whole []Rule
@@ -211,19 +239,19 @@ func buildJobs(u Unit, active []Rule, lines []string) []job {
 }
 
 type lintOpts struct {
-	rules, severity, out, provider, baseURL, protocol, model, apiKey, include, exclude, ledger string
-	workers, budget                                                                            int
-	temp, threshold                                                                            float64
-	noCache, noIgnore, quiet, retryErrors, dumpUnits                                           bool
-	setFlags                                                                                   map[string]bool
-	paths                                                                                      []string
+	rules, severity, out, provider, baseURL, protocol, model, apiKey, include, exclude, ledger, diff string
+	workers, budget                                                                                  int
+	temp, threshold                                                                                  float64
+	noCache, noIgnore, quiet, retryErrors, dumpUnits, calibrate                                      bool
+	setFlags                                                                                         map[string]bool
+	paths                                                                                            []string
 }
 
 func parseLintFlags(args []string) (lintOpts, error) {
 	var o lintOpts
 	fl := flag.NewFlagSet("lint", flag.ContinueOnError)
 	fl.StringVar(&o.rules, "rules", "", "comma-separated rule ids (default all)")
-	fl.StringVar(&o.severity, "severity", "", "min severity to report: low|med|high")
+	fl.StringVar(&o.severity, "severity", "", "min severity to report: info|warning|error")
 	fl.StringVar(&o.out, "out", "text", "output: text|json|jsonl")
 	fl.StringVar(&o.provider, "provider", "", "provider name from the global config")
 	fl.StringVar(&o.baseURL, "base-url", "", "API base URL")
@@ -233,20 +261,28 @@ func parseLintFlags(args []string) (lintOpts, error) {
 	fl.IntVar(&o.workers, "workers", 8, "concurrent in-flight batches")
 	fl.IntVar(&o.budget, "budget", 0, "max model calls this run, 0 = unlimited")
 	fl.Float64Var(&o.temp, "temperature", 0, "sampling temperature")
-	fl.Float64Var(&o.threshold, "threshold", 0.75, "noul probability threshold for systemone providers")
+	fl.Float64Var(&o.threshold, "threshold", 0.5, "minimum noul probability for systemone providers; each rule also has its own floor")
 	fl.BoolVar(&o.noCache, "no-cache", false, "bypass ~/.cache/lintdec/cache")
 	fl.BoolVar(&o.noIgnore, "no-ignore", false, "report findings despite inline //lintdec:ignore")
 	fl.BoolVar(&o.quiet, "quiet", false, "no progress output")
+	fl.BoolVar(&o.calibrate, "calibrate", false, "report every verdict over --threshold, ignoring rule floors and exceptions (for labeling)")
 	fl.StringVar(&o.ledger, "ledger", "", "append findings as JSONL to FILE as decided")
 	fl.BoolVar(&o.retryErrors, "retry-errors", false, "re-run only checks that errored last run")
 	fl.BoolVar(&o.dumpUnits, "dump-units", false, "print split units and exit (no model calls)")
 	fl.StringVar(&o.include, "include", "", "comma-separated glob include filters")
 	fl.StringVar(&o.exclude, "exclude", "", "comma-separated glob exclude filters")
+	fl.StringVar(&o.diff, "diff", "", "lint units changed since the merge base with this Git ref")
 	if err := fl.Parse(reorderArgs(args)); err != nil {
 		return o, err
 	}
 	o.setFlags = map[string]bool{}
 	fl.Visit(func(f *flag.Flag) { o.setFlags[f.Name] = true })
+	if o.budget < 0 {
+		return o, fmt.Errorf("--budget cannot be negative")
+	}
+	if o.setFlags["diff"] && o.diff == "" {
+		return o, fmt.Errorf("--diff needs a non-empty base ref")
+	}
 	o.paths = fl.Args()
 	if len(o.paths) == 0 {
 		o.paths = []string{"."}
@@ -266,10 +302,13 @@ func resolveRules(fRules string, pc ProjectConfig) ([]Rule, error) {
 		}
 		return want, nil
 	}
-	active := slices.Clone(rules)
-	if len(pc.RulesOn) > 0 {
-		active = slices.DeleteFunc(active, func(r Rule) bool { return !slices.Contains(pc.RulesOn, r.ID) })
+	// lintdec.yaml edits the default set: on: adds a rule, off: removes one.
+	for _, id := range slices.Concat(pc.RulesOn, pc.RulesOff) {
+		if _, ok := findRule(id); !ok {
+			fmt.Fprintf(os.Stderr, "warn: lintdec.yaml: unknown rule %s (ignored)\n", id)
+		}
 	}
+	active := slices.DeleteFunc(slices.Clone(rules), func(r Rule) bool { return defaultOff[r.ID] && !slices.Contains(pc.RulesOn, r.ID) })
 	return slices.DeleteFunc(active, func(r Rule) bool { return slices.Contains(pc.RulesOff, r.ID) }), nil
 }
 
@@ -278,6 +317,8 @@ type endpoint struct {
 	Protocol string
 	Model    string
 	APIKey   string
+	Auth     string
+	source   authSource
 }
 
 func pickProvider(cfg Config, wantProv, wantModel string) (string, Provider, error) {
@@ -307,6 +348,7 @@ func resolveProvider(o lintOpts, pc ProjectConfig) (endpoint, error) {
 	wantModel := firstNonEmpty(o.model, os.Getenv("LINTDEC_MODEL"), pc.Model)
 	wantProv := firstNonEmpty(o.provider, os.Getenv("LINTDEC_PROVIDER"), pc.Provider)
 	var ep endpoint
+	var selected Provider
 	if o.baseURL != "" {
 		ep = endpoint{BaseURL: strings.TrimRight(o.baseURL, "/"), Protocol: o.protocol, Model: wantModel, APIKey: o.apiKey}
 	} else {
@@ -318,6 +360,7 @@ func resolveProvider(o lintOpts, pc ProjectConfig) (endpoint, error) {
 		if err != nil {
 			return ep, err
 		}
+		selected = p
 		ep = endpoint{
 			BaseURL:  strings.TrimRight(p.BaseURL, "/"),
 			Protocol: firstNonEmpty(o.protocol, p.Protocol),
@@ -333,6 +376,13 @@ func resolveProvider(o lintOpts, pc ProjectConfig) (endpoint, error) {
 	}
 	if ep.BaseURL == "" || ep.Model == "" {
 		return ep, fmt.Errorf("provider incomplete (need baseUrl and model); run: lintdec model")
+	}
+	selected.BaseURL, selected.APIKey, selected.Protocol = ep.BaseURL, ep.APIKey, ep.Protocol
+	ep.Auth = selected.Auth
+	var err error
+	ep.source, err = providerAuth(selected)
+	if err != nil {
+		return ep, err
 	}
 	return ep, nil
 }
@@ -394,37 +444,41 @@ type poolResult struct {
 }
 
 func runPool(ctx context.Context, jobs []job, o lintOpts, cl *client, ch *cache, prog *progress, linesCache map[string][]string, ledgerF *os.File) poolResult {
+	if cl.budget == nil {
+		cl.budget = &requestBudget{limit: int64(o.budget)}
+	}
 	var (
 		mu         sync.Mutex
 		res        poolResult
-		callsUsed  atomic.Int64
 		ledgerWarn atomic.Bool // first failed ledger write is logged once
 	)
 	runJob := func(j job) {
+		prog.beginFile(j.unit.File)
+		defer prog.endFile(j.unit.File)
 		start := time.Now()
-		tempStr := fmt.Sprintf("%v", cl.temp)
-		if cl.protocol == "systemone" {
-			tempStr = fmt.Sprintf("systemone:%.3f", cl.threshold)
-		}
+		tempStr := cl.cacheTemp()
 		verdicts := make(map[string]Verdict, len(j.rules))
 		var todo []Rule
 		for _, r := range j.rules {
-			if v, ok := ch.get(ch.key(cl.model, tempStr, r.ID, j.unit)); ok {
+			if v, ok := ch.get(ch.key(cl.cacheModel(), tempStr, r.ID, j.unit)); ok {
 				verdicts[r.ID] = v
 				continue
 			}
 			todo = append(todo, r)
 		}
 		wasCached := len(todo) == 0
+		if wasCached && cl.costs != nil {
+			cl.costs.recordCachedJob()
+		}
 		if len(todo) > 0 {
-			if o.budget > 0 && callsUsed.Add(1) > int64(o.budget) {
+			v, err := runWithRetry(ctx, cl, job{unit: j.unit, rules: todo})
+			if errors.Is(err, errBudgetExhausted) {
 				mu.Lock()
 				res.budgetSkipped++
 				mu.Unlock()
 				prog.tick(0, false, "budget")
 				return
 			}
-			v, err := runWithRetry(ctx, cl, job{unit: j.unit, rules: todo})
 			if err != nil {
 				mu.Lock()
 				res.errs++
@@ -434,23 +488,19 @@ func runPool(ctx context.Context, jobs []job, o lintOpts, cl *client, ch *cache,
 				show := res.errs <= 5 && ctx.Err() == nil
 				mu.Unlock()
 				if show {
-					fmt.Fprintf(os.Stderr, "warn: %s: %v\n", jobKey(j), err)
+					prog.warn(fmt.Sprintf("warn: %s: %v", jobKey(j), err))
 				}
-				prog.tick(time.Since(start), false, jobKey(j)+"  ERROR "+err.Error())
+				prog.tick(time.Since(start), false, fmt.Sprintf("%s:%d · error", j.unit.File, j.unit.Start))
 				return
 			}
 			for id, vv := range v {
-				ch.put(ch.key(cl.model, tempStr, id, j.unit), vv)
+				ch.put(ch.key(cl.cacheModel(), tempStr, id, j.unit), vv)
 				verdicts[id] = vv
 			}
 		}
 		for _, r := range j.rules {
 			vv := verdicts[r.ID]
-			if !vv.Lint {
-				continue
-			}
-			// Structural guard, not a size judgment: hard wraps break mid-sentence.
-			if r.ID == "md-hard-wrap" && (strings.Count(j.unit.Text, "\n") < 1 || wrapBreaks(j.unit.Text) < 2) {
+			if !reportable(r, vv, cl.calibrate) {
 				continue
 			}
 			f := buildFinding(j, r, vv, linesCache)
@@ -465,13 +515,13 @@ func runPool(ctx context.Context, jobs []job, o lintOpts, cl *client, ch *cache,
 			if ledgerF != nil {
 				b, _ := json.Marshal(f)
 				if _, werr := ledgerF.Write(append(b, '\n')); werr != nil && ledgerWarn.CompareAndSwap(false, true) {
-					fmt.Fprintf(os.Stderr, "warn: ledger write failed: %v\n", werr)
+					prog.warn(fmt.Sprintf("warn: ledger write failed: %v", werr))
 				}
 			}
 			mu.Unlock()
 			prog.addFinding(f)
 		}
-		prog.tick(time.Since(start), wasCached, fmt.Sprintf("%s → %d flagged of %d", jobKey(j), lintCount(verdicts), len(j.rules)))
+		prog.tick(time.Since(start), wasCached, fmt.Sprintf("%s:%d · %d flagged", j.unit.File, j.unit.Start, lintCount(verdicts)))
 	}
 
 	jobsCh := make(chan job, 64)
@@ -514,7 +564,7 @@ func splitAllFiles(files []string, active []Rule) ([]Unit, []job, int, map[strin
 			fmt.Fprintf(os.Stderr, "warn: %s: %v (skipped)\n", f, err)
 			continue
 		}
-		u := splitFile(f, b)
+		u := slices.DeleteFunc(splitFile(f, b), structuralComment)
 		linesCache[f] = strings.Split(string(b), "\n")
 		units = append(units, u...)
 		for _, unit := range u {
@@ -528,10 +578,19 @@ func splitAllFiles(files []string, active []Rule) ([]Unit, []job, int, map[strin
 	return units, jobs, decisions, linesCache
 }
 
-func emitReport(res poolResult, sev, outFmt string, nJobs int, prog *progress) int {
+func emitReport(res poolResult, sev, outFmt string, nJobs int, prog *progress, diff bool) int {
+	return emitReportWithTemp(res, sev, outFmt, nJobs, prog, diff, func() (reportFile, error) {
+		return os.CreateTemp("", "lintdec-report-*.txt")
+	})
+}
+
+func emitReportWithTemp(res poolResult, sev, outFmt string, nJobs int, prog *progress, diff bool, createTemp func() (reportFile, error)) int {
 	writeErrored(res.erroredKeys)
 	minRank := severityRank(sev)
 	var report []Finding
+	if diff && outFmt == "json" {
+		report = []Finding{}
+	}
 	sevSuppressed := 0
 	for _, f := range res.findings {
 		if severityRank(f.Severity) >= minRank {
@@ -540,19 +599,27 @@ func emitReport(res poolResult, sev, outFmt string, nJobs int, prog *progress) i
 			sevSuppressed++
 		}
 	}
+	report = collapsePerFile(report)
 	sortFindings(report)
-	emit(report, outFmt)
 	exit := 0
 	if len(report) > 0 {
 		exit = 1
 	}
-	if nJobs > 0 && res.errs == nJobs {
+	if (nJobs > 0 && res.errs == nJobs) || res.budgetSkipped > 0 {
 		exit = 2
 	}
 	if res.interrupted {
 		exit = 130
 	}
-	prog.finish(len(report), res.errs, res.ignoredCount, res.budgetSkipped, sevSuppressed, exit)
+	prog.clear()
+	if interactiveResults(outFmt, prog) {
+		prog.resultsHeader(os.Stdout, report, res.errs, res.ignoredCount, res.budgetSkipped, sevSuppressed, exit)
+		emitResults(os.Stdout, os.Stderr, report, colorEnabled(true), createTemp)
+		prog.resultsCost()
+	} else {
+		emit(report, outFmt)
+		prog.finish(len(report), res.errs, res.ignoredCount, res.budgetSkipped, sevSuppressed, exit)
+	}
 	return exit
 }
 
@@ -590,35 +657,50 @@ func dumpUnits(files []string, units []Unit, jobs []job, decisions int, active [
 	}
 }
 
-func lintCmd(args []string) int {
-	o, err := parseLintFlags(args)
-	if err != nil {
-		return 2
-	}
+// lintSettings merges flags with the repository's lintdec.yaml: severity and active rules.
+func lintSettings(o lintOpts) (ProjectConfig, string, []Rule, error) {
 	pc, pcWarn := loadProjectConfig(resolveProjectBase(o.paths))
 	for _, w := range pcWarn {
 		fmt.Fprintln(os.Stderr, "warn: "+w)
 	}
-	sev := firstNonEmpty(o.severity, pc.Severity, "low")
+	sev := firstNonEmpty(o.severity, pc.Severity, "info")
 	if severityRank(sev) < 0 {
-		fmt.Fprintf(os.Stderr, "bad --severity: %s (low|med|high)\n", sev)
+		return pc, "", nil, fmt.Errorf("bad --severity: %s (info|warning|error)", sev)
+	}
+	active, err := resolveRules(o.rules, pc)
+	return pc, sev, active, err
+}
+
+func lintCmd(args []string) int {
+	o, err := parseLintFlags(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	pc, sev, active, err := lintSettings(o)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
 	include, exclude := resolveGlobs(o, pc)
-	active, err := resolveRules(o.rules, pc)
+	files, changes, err := lintTargets(o, include, exclude)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	files, err := collectFiles(o.paths, include, exclude)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 2
+	if changes != nil && len(files) == 0 {
+		return nothingToLint(o, "no changed files to lint")
 	}
 	units, jobs, decisions, linesCache := splitAllFiles(files, active)
+	if changes != nil {
+		units, jobs, decisions = changedUnits(units, changes, active, linesCache)
+	}
 	if o.dumpUnits {
 		dumpUnits(files, units, jobs, decisions, active)
 		return 0
+	}
+	if len(jobs) == 0 {
+		return nothingToLint(o, "0 checks (no unit matches the active rules)")
 	}
 	prov, err := resolveProvider(o, pc)
 	if err != nil {
@@ -636,29 +718,31 @@ func lintCmd(args []string) int {
 			return 0
 		}
 	}
-	if len(jobs) == 0 {
-		fmt.Fprintln(os.Stderr, "0 checks (no unit matches the active rules)")
-		return 0
-	}
-	if !o.quiet {
-		fmt.Fprintf(os.Stderr, "lintdec: %d files → %d units, %d batches (%d decisions) · rules: %d · model: %s\n",
-			len(files), len(units), len(jobs), decisions, len(active), prov.Model)
-	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	cl := &client{
-		base:      prov.BaseURL,
-		protocol:  prov.Protocol,
-		model:     prov.Model,
-		apiKey:    prov.APIKey,
-		temp:      o.temp,
-		threshold: o.threshold,
-		httpc:     &http.Client{Timeout: 5 * time.Minute},
-	}
+	cl := newLintClient(prov, o)
 	ch := newCache(!o.noCache)
+	if !o.quiet {
+		printLintHeader(len(files), len(units), jobs, len(active), cl.model)
+	}
+	return runLint(ctx, o, jobs, cl, ch, linesCache, sev, changes != nil)
+}
+
+// nothingToLint ends a run with no checks; JSON callers still get an empty array.
+func nothingToLint(o lintOpts, msg string) int {
+	if o.out == "json" {
+		emit([]Finding{}, o.out)
+	}
+	fmt.Fprintln(os.Stderr, msg)
+	return 0
+}
+
+func runLint(ctx context.Context, o lintOpts, jobs []job, cl *client, ch *cache, linesCache map[string][]string, sev string, diff bool) int {
 	prog := newProgress(len(jobs), o.quiet)
+	prog.costs = cl.costs
 	var ledgerF *os.File
 	if o.ledger != "" {
+		var err error
 		ledgerF, err = os.OpenFile(o.ledger, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -666,8 +750,77 @@ func lintCmd(args []string) int {
 		}
 		defer ledgerF.Close()
 	}
+	if prog.tty && !prog.quiet {
+		prog.drawBar()
+	}
 	res := runPool(ctx, jobs, o, cl, ch, prog, linesCache, ledgerF)
-	return emitReport(res, sev, o.out, len(jobs), prog)
+	return emitReport(res, sev, o.out, len(jobs), prog, diff)
+}
+
+// lintTargets: the files to lint, plus changed ranges in diff mode.
+func lintTargets(o lintOpts, include, exclude []string) ([]string, map[string]diffRanges, error) {
+	if o.diff == "" {
+		files, err := collectFiles(o.paths, include, exclude)
+		return files, nil, err
+	}
+	changes, err := collectDiff(".", o.diff)
+	if err != nil {
+		return nil, nil, err
+	}
+	files, err := diffFiles(changes, o.paths, include, exclude)
+	return files, changes, err
+}
+
+// changedUnits keeps units a diff touches, including a changed doc comment above them.
+func changedUnits(units []Unit, changes map[string]diffRanges, active []Rule, linesCache map[string][]string) ([]Unit, []job, int) {
+	changed := func(u Unit) bool {
+		path, err := canonicalDiffPath(u.File)
+		return err == nil && (changes[path].intersects(u.Start, u.End) || (u.ContextStart > 0 && changes[path].intersects(u.ContextStart, u.Start-1)))
+	}
+	units = slices.DeleteFunc(units, func(u Unit) bool { return !changed(u) })
+	var jobs []job
+	decisions := 0
+	for _, u := range units {
+		for _, j := range buildJobs(u, active, linesCache[u.File]) {
+			jobs = append(jobs, j)
+			decisions += len(j.rules)
+		}
+	}
+	return units, jobs, decisions
+}
+
+func newLintClient(prov endpoint, o lintOpts) *client {
+	return &client{
+		base:      prov.BaseURL,
+		protocol:  prov.Protocol,
+		model:     prov.Model,
+		apiKey:    prov.APIKey,
+		source:    prov.source,
+		trustCost: reportsProviderCost(prov.BaseURL),
+		costs:     &costAccumulator{},
+		budget:    &requestBudget{limit: int64(o.budget)},
+		temp:      o.temp,
+		threshold: o.threshold,
+		calibrate: o.calibrate,
+		httpc:     &http.Client{Timeout: 5 * time.Minute},
+	}
+}
+
+// printLintHeader: the run summary on stderr.
+func printLintHeader(nFiles, nUnits int, jobs []job, nRules int, model string) {
+	decisions := 0
+	for _, j := range jobs {
+		decisions += len(j.rules)
+	}
+	if terminal(os.Stderr) {
+		color := colorEnabled(true)
+		fmt.Fprintf(os.Stderr, "\n  %s  %s\n", paint("LINTDEC", accent, color), paint("Checking your files", bold, color))
+		fmt.Fprintf(os.Stderr, "  %s\n", paint(fmt.Sprintf("%d files  ·  %d units  ·  %d checks  ·  %d rules  ·  %s", nFiles, nUnits, len(jobs), nRules, cleanText(model)), dim, color))
+		fmt.Fprintln(os.Stderr)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "lintdec: %d files → %d units, %d batches (%d decisions) · rules: %d · model: %s\n",
+		nFiles, nUnits, len(jobs), decisions, nRules, model)
 }
 
 func ruleIDList(rs []Rule) []string {
@@ -688,40 +841,29 @@ func lintCount(v map[string]Verdict) int {
 	return n
 }
 
-// wrapBreaks counts lines ending mid-sentence: the structural signature
-// of hard-wrapping, enforced because the model misreads blocks of complete
-// similar-length sentences as wrapped.
-func wrapBreaks(text string) int {
-	n := 0
-	lines := strings.Split(text, "\n")
-	for i := 0; i < len(lines)-1; i++ {
-		t := strings.TrimRight(lines[i], " \t")
-		if t == "" {
-			continue
-		}
-		r := []rune(t)
-		last := r[len(r)-1]
-		if strings.ContainsRune(".!?:…)\"'`*}_", last) {
-			continue
-		}
-		n++
-	}
-	return n
-}
-
 func buildFinding(j job, r Rule, v Verdict, lines map[string][]string) Finding {
-	// Line anchors come from the model's guess and are unreliable; findings
-	// anchor to the unit start (plan standing rule: real unit spans).
+	// Model-provided line numbers are unreliable, so anchor to the unit start.
 	ln := &j.unit.Start
 	line := *ln
 	quote := ""
-	if ls, ok := lines[j.unit.File]; ok && line >= 1 && line <= len(ls) {
-		quote = strings.TrimSpace(ls[line-1])
-		if len(quote) > 120 {
-			quote = quote[:120] + "…"
+	if spanKinds[j.unit.Kind] {
+		quote = j.unit.Text
+		// keep the marked word in view when the sentence is longer than the quote
+		if k := strings.Index(quote, "⟦"); k > 160 {
+			quote = "…" + quote[k-120:]
 		}
+	} else if ls, ok := lines[j.unit.File]; ok && line >= 1 && line <= len(ls) {
+		quote = strings.TrimSpace(ls[line-1])
 	}
-	return Finding{Rule: r.ID, Severity: v.Severity, Confidence: v.Confidence, File: j.unit.File, Line: line, Quote: quote, Message: v.Reason}
+	if len(quote) > 240 {
+		quote = quote[:240] + "…"
+	}
+	span := ""
+	if a, b := strings.Index(j.unit.Text, "⟦"), strings.Index(j.unit.Text, "⟧"); spanKinds[j.unit.Kind] && a >= 0 && b > a {
+		span = j.unit.Text[a+len("⟦") : b]
+	}
+	return Finding{Rule: r.ID, Severity: ruleLevel[r.ID], Confidence: v.Confidence, File: j.unit.File, Line: line, EndLine: j.unit.End,
+		Span: span, Quote: quote, Message: v.Reason, Veto: v.Veto, Source: r.Source}
 }
 
 // isIgnored reports whether a //lintdec:ignore (or <!-- lintdec:ignore -->)

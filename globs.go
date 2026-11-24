@@ -51,7 +51,7 @@ func segMatch(pat, pathSegs []string) bool {
 }
 
 // matchAnyGlob matches p against any pattern, trying both the full relative path and the
-// basename, so "*.go" and "**/legacy/**" both feel natural.
+// basename, so "*.go" and "**/vendor/**" both feel natural.
 func matchAnyGlob(patterns []string, p string) bool {
 	base := filepath.Base(p)
 	for _, g := range patterns {

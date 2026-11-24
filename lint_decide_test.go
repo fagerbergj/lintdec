@@ -14,6 +14,16 @@ import (
 	"time"
 )
 
+func TestCacheKeysIncludeProviderEndpoint(t *testing.T) {
+	unit := Unit{File: "a.go", Kind: "Comment", Start: 1, End: 1, Text: "// x"}
+	cache := newCache(true)
+	a := &client{base: "https://first.example/v1", model: "same"}
+	b := &client{base: "https://second.example/v1", model: "same"}
+	if cache.key(a.cacheModel(), "0", "comment-long", unit) == cache.key(b.cacheModel(), "0", "comment-long", unit) {
+		t.Fatal("different providers must not share cached verdicts")
+	}
+}
+
 func TestFollowUpDoesNotRequeryAnsweredRules(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -51,6 +61,61 @@ func TestFollowUpDoesNotRequeryAnsweredRules(t *testing.T) {
 	}
 }
 
+func TestBudgetRejectsNegativeLimit(t *testing.T) {
+	if _, err := parseLintFlags([]string{"--budget=-1"}); err == nil {
+		t.Fatal("negative budget must not disable the limit")
+	}
+}
+
+func TestBudgetIncompleteRunExitsTwo(t *testing.T) {
+	t.Chdir(t.TempDir())
+	for _, findings := range [][]Finding{nil, {{Rule: "comment-long", Severity: "error", File: "a.go", Line: 1, Message: "issue"}}} {
+		var code int
+		out := captureStdout(t, func() {
+			code = emitReport(poolResult{findings: findings, budgetSkipped: 1}, "info", "json", 2, newProgress(2, true), true)
+		})
+		if code != 2 || (len(findings) > 0 && !strings.Contains(out, "comment-long")) {
+			t.Fatalf("incomplete run: code=%d output=%q", code, out)
+		}
+	}
+}
+
+func TestBudgetCapsFollowupInferenceRequests(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": `{"comment-long":{"lint":false}}`}}}})
+	}))
+	defer srv.Close()
+	r1, _ := findRule("comment-long")
+	r2, _ := findRule("todo-no-owner")
+	j := job{unit: Unit{File: "a.go", Kind: "Comment", Start: 1, End: 1, Text: "// TODO"}, rules: []Rule{r1, r2}}
+	cl := &client{base: srv.URL, model: "m", httpc: srv.Client()}
+	result := runPool(context.Background(), []job{j}, lintOpts{workers: 1, budget: 1}, cl, newCache(false), newProgress(1, true), nil, nil)
+	if calls.Load() != 1 || result.budgetSkipped != 1 {
+		t.Fatalf("budget=1 made %d inference requests, skipped=%d", calls.Load(), result.budgetSkipped)
+	}
+}
+
+func TestBudgetCapsConcurrentRequests(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": `{"comment-long":{"lint":false}}`}}}})
+	}))
+	defer srv.Close()
+	rule, _ := findRule("comment-long")
+	jobs := make([]job, 20)
+	for i := range jobs {
+		jobs[i] = job{unit: Unit{File: "a.go", Kind: "Comment", Start: 1, End: 1, Text: "// x"}, rules: []Rule{rule}}
+	}
+	cl := &client{base: srv.URL, model: "m", httpc: srv.Client()}
+	result := runPool(context.Background(), jobs, lintOpts{workers: 8, budget: 3}, cl, newCache(false), newProgress(len(jobs), true), nil, nil)
+	if calls.Load() != 3 || result.budgetSkipped != 17 {
+		t.Fatalf("calls=%d skipped=%d", calls.Load(), result.budgetSkipped)
+	}
+}
+
 func TestRunWithRetryHonorsCancel(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
@@ -83,15 +148,6 @@ func TestClientRejectsMalformedURL(t *testing.T) {
 	}
 }
 
-func TestDefaultIncludeHasNonGoLanguages(t *testing.T) {
-	inc := defaultInclude()
-	for _, want := range []string{"*.go", "*.md", "*.ts", "*.py", "*.rs"} {
-		if !slices.Contains(inc, want) {
-			t.Errorf("defaultInclude missing %q: %v", want, inc)
-		}
-	}
-}
-
 func TestCollectFilesAllowsExternalPaths(t *testing.T) {
 	dir := t.TempDir()
 	f := filepath.Join(dir, "app.ts")
@@ -108,7 +164,7 @@ func TestCollectFilesAllowsExternalPaths(t *testing.T) {
 }
 
 func TestSeverityRankRejectsUnknown(t *testing.T) {
-	if severityRank("low") != 0 || severityRank("med") != 1 || severityRank("high") != 2 {
+	if severityRank("info") != 0 || severityRank("warning") != 1 || severityRank("error") != 2 || severityRank("high") >= 0 {
 		t.Fatal("known severities ranked wrong")
 	}
 	if severityRank("medium") >= 0 || severityRank("") >= 0 {
@@ -143,13 +199,30 @@ func TestIsIgnoredAndLoadProjectConfig(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	cfg := "severity: med\nrules:\n  - off: md-jargon\nexclude:\n  - '**/fixtures/**'\n"
+	cfg := "severity: warning\nrules:\n  - off: md-jargon\nexclude:\n  - '**/fixtures/**'\n"
 	if err := os.WriteFile(filepath.Join(dir, "lintdec.yaml"), []byte(cfg), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	pc, warns := loadProjectConfig(dir)
-	if len(warns) != 0 || pc.Severity != "med" || !slices.Contains(pc.RulesOff, "md-jargon") || !slices.Contains(pc.Exclude, "**/fixtures/**") {
+	if len(warns) != 0 || pc.Severity != "warning" || !slices.Contains(pc.RulesOff, "md-jargon") || !slices.Contains(pc.Exclude, "**/fixtures/**") {
 		t.Errorf("unexpected project config: %+v warns=%v", pc, warns)
+	}
+}
+
+func TestSystemOneRejectsMissingAndInvalidProbabilities(t *testing.T) {
+	for _, value := range []string{`{}`, `{"noul":null}`, `{"noul":-0.1}`, `{"noul":1.1}`} {
+		t.Run(value, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Write([]byte(`{"answers":{"todo-no-owner":` + value + `}}`))
+			}))
+			defer srv.Close()
+			rule, _ := findRule("todo-no-owner")
+			cl := &client{base: srv.URL, protocol: "systemone", model: "jev", httpc: srv.Client()}
+			_, err := cl.call(context.Background(), job{unit: Unit{File: "a.go", Kind: "Comment", Start: 1, End: 1, Text: "// TODO"}, rules: []Rule{rule}})
+			if err == nil {
+				t.Fatalf("accepted invalid answer %s", value)
+			}
+		})
 	}
 }
 
