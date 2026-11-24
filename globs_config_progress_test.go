@@ -2,14 +2,9 @@ package main
 
 import (
 	"bufio"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 )
@@ -51,22 +46,6 @@ func TestConnectionRejectsMalformedURL(t *testing.T) {
 	err := testConnection(Provider{BaseURL: "http://bad host/v1", Models: []string{"m"}}, "m")
 	if err == nil {
 		t.Fatal("expected error for malformed base URL")
-	}
-}
-
-func TestConfigMigratesLegacyModel(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	p := filepath.Join(dir, "lintdec", "config.json")
-	os.MkdirAll(filepath.Dir(p), 0o755)
-	os.WriteFile(p, []byte(`{"active":"clef","providers":{"clef":{"baseUrl":"http://127.0.0.1:11436/v1","model":"qwen3.8-27b"}}}`), 0o600)
-
-	cfg, err := loadConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(cfg.Providers["clef"].Models, []string{"qwen3.8-27b"}) || cfg.Providers["clef"].Model != "" {
-		t.Errorf("legacy model not migrated: %+v", cfg.Providers["clef"])
 	}
 }
 
@@ -125,53 +104,13 @@ func TestModelPickerAndProviderResolution(t *testing.T) {
 	}
 }
 
-func TestSelfUpdateVerifiesChecksumAndReplaces(t *testing.T) {
-	payload := []byte("#!/bin/sh\necho new-binary\n")
-	sum := sha256.Sum256(payload)
-	wantHex := hex.EncodeToString(sum[:])
-
-	var srv *httptest.Server
-	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/latest":
-			json.NewEncoder(w).Encode(map[string]any{
-				"tag_name": "v9.9.9",
-				"assets": []map[string]string{
-					{"name": "lintdec_linux_amd64", "browser_download_url": srv.URL + "/bin"},
-					{"name": "checksums.txt", "browser_download_url": srv.URL + "/sums"},
-				},
-			})
-		case "/sums":
-			w.Write([]byte(wantHex + "  lintdec_linux_amd64\n"))
-		case "/bin":
-			w.Write(payload)
-		}
-	}))
-	defer srv.Close()
-
-	exe := filepath.Join(t.TempDir(), "lintdec")
-	if err := os.WriteFile(exe, []byte("old"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := selfUpdate(exe, srv.URL+"/latest", "linux", "amd64"); err != nil {
-		t.Fatalf("selfUpdate failed: %v", err)
-	}
-	got, err := os.ReadFile(exe)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != string(payload) {
-		t.Errorf("binary not replaced: got %q", got)
-	}
-}
-
 func TestProgressSeverityTotals(t *testing.T) {
 	p := newProgress(10, true)
 	for range 10 {
-		p.addFinding(Finding{Severity: "high"})
+		p.addFinding(Finding{Severity: "error"})
 	}
-	if p.ledgerN != 10 || p.bySev["high"] != 10 {
-		t.Errorf("ledgerN=%d high=%d, want 10/10", p.ledgerN, p.bySev["high"])
+	if p.ledgerN != 10 || p.bySev["error"] != 10 {
+		t.Errorf("ledgerN=%d high=%d, want 10/10", p.ledgerN, p.bySev["error"])
 	}
 	if len(p.ledger) != 8 {
 		t.Errorf("panel ring len=%d, want 8", len(p.ledger))

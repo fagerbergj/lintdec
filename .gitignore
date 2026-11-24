@@ -4,3 +4,5 @@ coverage.out
 cover-root.out
 cover-sloplint.out
 .lintdec/
+*.vsix
+node_modules/

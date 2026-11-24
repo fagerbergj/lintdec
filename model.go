@@ -1,11 +1,18 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"slices"
 	"strconv"
 	"strings"
+
+	tea "charm.land/bubbletea/v2"
+	"charm.land/huh/v2"
+	"github.com/charmbracelet/colorprofile"
+	"github.com/mattn/go-runewidth"
 )
 
 type modelChoice struct {
@@ -51,11 +58,19 @@ func modelList(c Config) int {
 		names = append(names, n)
 	}
 	slices.Sort(names)
+	width := 12
+	for _, name := range names {
+		width = max(width, runewidth.StringWidth(cleanText(name)))
+	}
+	interactive := terminal(os.Stdout)
+	if interactive {
+		fmt.Printf("\n  %s\n\n", paint("MODELS", bold, colorEnabled(true)))
+	}
 	picked := 0
 	for _, name := range names {
 		p := c.Providers[name]
 		if len(p.Models) == 0 {
-			fmt.Printf("  %-12s (no models yet, run: lintdec model %s)\n", name, name)
+			fmt.Printf("  %s (no models yet, run: lintdec model %s)\n", padText(name, width), name)
 			continue
 		}
 		for _, m := range p.Models {
@@ -63,7 +78,7 @@ func modelList(c Config) int {
 			if name == c.Active && m == c.activeModelFor(name, p) {
 				mark = "*"
 			}
-			fmt.Printf("%s %-12s %s\n", mark, name, m)
+			fmt.Printf("%s %s %s\n", paint(mark, accent, colorEnabled(interactive)), padText(name, width), cleanText(m))
 			picked++
 		}
 	}
@@ -88,13 +103,13 @@ func savedModelChoices(c Config) []modelChoice {
 	return out
 }
 
-func fetchChoicesForProvider(name string, p Provider) []modelChoice {
+func fetchChoicesForProvider(name string, p Provider, interactive bool) []modelChoice {
 	ids, err := fetchModels(p)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warn: %s /models: %v (using saved models)\n", name, err)
 		ids = p.Models
 	}
-	if len(ids) > 20 {
+	if !interactive && len(ids) > 20 {
 		var filter string
 		ask(&filter, fmt.Sprintf("%d models on %s — filter substring (blank for all)", len(ids), name), "")
 		if filter != "" {
@@ -111,38 +126,102 @@ func fetchChoicesForProvider(name string, p Provider) []modelChoice {
 	return out
 }
 
+func modelPickerForm(choices []modelChoice, selected *modelChoice) *huh.Form {
+	options := make([]huh.Option[modelChoice], 0, len(choices))
+	for _, choice := range choices {
+		options = append(options, huh.NewOption(cleanText(choice.provider)+"  "+cleanText(choice.model), choice))
+	}
+	keys := huh.NewDefaultKeyMap()
+	keys.Quit.SetKeys("ctrl+c", "esc")
+	return huh.NewForm(huh.NewGroup(huh.NewSelect[modelChoice]().
+		Title("Choose a model").Description("↑/↓ to move, / to filter, enter to select, esc or ctrl+c to cancel.").
+		Height(min(12, len(choices)+2)).Value(selected).Options(options...))).WithKeyMap(keys).WithShowHelp(true)
+}
+
+func runModelPicker(choices []modelChoice, active modelChoice, in io.Reader, out io.Writer) (modelChoice, error) {
+	selected := active
+	form := modelPickerForm(choices, &selected)
+	if !colorEnabled(true) {
+		form.WithProgramOptions(tea.WithColorProfile(colorprofile.Ascii))
+	}
+	form.WithInput(in).WithOutput(out)
+	if err := form.Run(); err != nil {
+		return modelChoice{}, err
+	}
+	if form.State != huh.StateCompleted {
+		return modelChoice{}, huh.ErrUserAborted
+	}
+	return selected, nil
+}
+
 func modelPick(c *Config, rest []string) int {
 	if len(c.Providers) == 0 {
 		fmt.Fprintln(os.Stderr, "no providers configured; run: lintdec provider add")
 		return 2
 	}
+	interactive := os.Getenv("LINTDEC_ACCESSIBLE") != "1" && terminal(os.Stdin) && terminal(os.Stdout)
+	choices, err := modelChoices(c, rest, interactive)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	activeModel := ""
+	if p, ok := c.Providers[c.Active]; ok {
+		activeModel = c.activeModelFor(c.Active, p)
+	}
+	if interactive {
+		choice, err := runModelPicker(choices, modelChoice{provider: c.Active, model: activeModel}, os.Stdin, os.Stdout)
+		if errors.Is(err, huh.ErrUserAborted) {
+			fmt.Fprintln(os.Stderr, "model selection canceled")
+			return 130
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+		return selectModel(c, choice.provider, choice.model)
+	}
+	return pickModelByNumber(c, choices, activeModel)
+}
+
+// modelChoices: the named provider's models, else saved models, else the active provider's catalog.
+func modelChoices(c *Config, rest []string, interactive bool) ([]modelChoice, error) {
 	var choices []modelChoice
 	if len(rest) > 0 {
 		p, ok := c.Providers[rest[0]]
 		if !ok {
-			fmt.Fprintf(os.Stderr, "no such provider: %s\n", rest[0])
-			return 2
+			return nil, fmt.Errorf("no such provider: %s", rest[0])
 		}
-		choices = fetchChoicesForProvider(rest[0], p)
-	} else {
-		choices = savedModelChoices(*c)
-		if len(choices) == 0 && c.Active != "" {
-			choices = fetchChoicesForProvider(c.Active, c.Providers[c.Active])
-		}
+		choices = fetchChoicesForProvider(rest[0], p, interactive)
+	} else if choices = savedModelChoices(*c); len(choices) == 0 && c.Active != "" {
+		choices = fetchChoicesForProvider(c.Active, c.Providers[c.Active], interactive)
 	}
 	if len(choices) == 0 {
-		fmt.Fprintln(os.Stderr, "no models found; add one with: lintdec model add <provider> <model>")
-		return 2
+		return nil, errors.New("no models found; add one with: lintdec model add <provider> <model>")
 	}
-	for i, ch := range choices {
-		mark := " "
-		if ch.provider == c.Active && ch.model == c.activeModelFor(ch.provider, c.Providers[ch.provider]) {
-			mark = "*"
+	return choices, nil
+}
+
+// pickModelByNumber is the plain prompt: a numbered list with the active model as the default.
+func pickModelByNumber(c *Config, choices []modelChoice, activeModel string) int {
+	isActive := func(ch modelChoice) bool { return ch.provider == c.Active && ch.model == activeModel }
+	if terminal(os.Stdout) {
+		renderModelChoices(os.Stdout, choices, c.Active, activeModel, colorEnabled(true))
+	} else {
+		for i, ch := range choices {
+			mark := " "
+			if isActive(ch) {
+				mark = "*"
+			}
+			fmt.Printf("%s %2d) %-12s %s\n", mark, i+1, ch.provider, ch.model)
 		}
-		fmt.Printf("%s %2d) %-12s %s\n", mark, i+1, ch.provider, ch.model)
+	}
+	defaultChoice := ""
+	if i := slices.IndexFunc(choices, isActive); i >= 0 {
+		defaultChoice = strconv.Itoa(i + 1)
 	}
 	var raw string
-	ask(&raw, "pick number", "")
+	ask(&raw, "pick number", defaultChoice)
 	idx, err := strconv.Atoi(raw)
 	if err != nil || idx < 1 || idx > len(choices) {
 		fmt.Fprintf(os.Stderr, "invalid selection: %q\n", raw)

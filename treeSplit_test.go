@@ -162,3 +162,34 @@ func countKind(units []Unit, kind string) int {
 	}
 	return n
 }
+
+func TestSplitGoCommentSeesWholeDeclaration(t *testing.T) {
+	body := strings.Repeat("\tx++\n", 20)
+	src := "package p\n\n// build ends by computing a digest.\nfunc build(x int) int {\n" + body + "\treturn digest(x)\n}\n\n// loose note\n"
+	var doc, loose *Unit
+	for _, u := range splitGo("p.go", []byte(src)) {
+		switch {
+		case u.Kind == "Comment" && u.Start == 3:
+			doc = &u
+		case u.Kind == "Comment":
+			loose = &u
+		}
+	}
+	if doc == nil || !strings.Contains(doc.Context, "return digest(x)") || !strings.Contains(doc.Context, "package p") {
+		t.Fatalf("doc comment context must cover its function and nearby lines: %+v", doc)
+	}
+	if loose == nil || !strings.Contains(loose.Context, "return digest(x)") || strings.Contains(loose.Context, "func build") {
+		t.Fatalf("top-level comment should keep the nearby-lines window: %+v", loose)
+	}
+}
+
+func TestSplitGoFunctionSeesItsDocComment(t *testing.T) {
+	src := "package p\n\n// put is best-effort: a failed write only costs a re-query.\nfunc put() {}\n\n// Store hides the backend.\ntype Store interface{ Get() }\n"
+	got := map[string]string{}
+	for _, u := range splitGo("p.go", []byte(src)) {
+		got[u.Kind] = u.Context
+	}
+	if !strings.Contains(got["Function"], "best-effort") || !strings.Contains(got["Interface"], "hides the backend") {
+		t.Fatalf("doc comments missing from unit context: %q", got)
+	}
+}
