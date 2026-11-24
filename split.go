@@ -302,6 +302,7 @@ func nextLine(lines []string, from int) string {
 }
 
 // sectionUnits: one unit per filled H2+ section, up to the next heading at its level or above.
+// lines has code blanked, so a section that is only a fenced block reads as a placeholder: nothing to judge.
 func sectionUnits(path string, lines []string, heads []mdHeading, header string) []Unit {
 	var units []Unit
 	for k, h := range heads {

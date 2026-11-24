@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/jdkato/prose/v2"
 )
@@ -68,6 +69,7 @@ func (s sentence) lineAt(off int) int {
 func blockSentences(block string) []sentence {
 	block = replaceKeepingLines(htmlComment, block, func(string) string { return "" })
 	block = replaceKeepingLines(mdLink, block, func(m string) string { return mdLink.ReplaceAllString(m, "$1") })
+	ws := blockWords(block)
 	var out []sentence
 	var cur sentence
 	flush := func() {
@@ -76,23 +78,58 @@ func blockSentences(block string) []sentence {
 		}
 		cur = sentence{}
 	}
-	for ln, l := range strings.Split(block, "\n") {
-		if mdListMark.MatchString(l) {
+	for k, w := range ws {
+		if w.item {
 			flush()
 		}
-		for _, w := range strings.Fields(mdMarkup.Replace(mdListMark.ReplaceAllString(l, ""))) {
-			if cur.text != "" {
-				cur.text += " "
-			}
-			cur.words, cur.lines = append(cur.words, len(cur.text)), append(cur.lines, ln)
-			cur.text += w
-			if wordEnd.MatchString(w) {
-				flush()
-			}
+		if cur.text != "" {
+			cur.text += " "
+		}
+		cur.words, cur.lines = append(cur.words, len(cur.text)), append(cur.lines, w.line)
+		cur.text += w.text
+		if endsSentence(ws, k) {
+			flush()
 		}
 	}
 	flush()
 	return out
+}
+
+// blockWord is one word of a block with markup removed; item marks the first word of a list item.
+type blockWord struct {
+	text string
+	line int
+	item bool
+}
+
+func blockWords(block string) []blockWord {
+	var ws []blockWord
+	for ln, l := range strings.Split(block, "\n") {
+		item := mdListMark.MatchString(l)
+		for _, w := range strings.Fields(mdMarkup.Replace(mdListMark.ReplaceAllString(l, ""))) {
+			ws = append(ws, blockWord{w, ln, item})
+			item = false
+		}
+	}
+	return ws
+}
+
+// abbreviation: dotted letters ("e.g.", "U.S.", "a.m.") or an initial ("J."), which end no sentence.
+var abbreviation = regexp.MustCompile(`^(?:[A-Za-z]{1,3}\.){2,}$|^[A-Z]\.$`)
+
+// endsSentence: word k ends in . ! or ? and the next word, if any, could start a sentence;
+// "etc. for pipes" continues because a lowercase word is no sentence start.
+func endsSentence(ws []blockWord, k int) bool {
+	w := strings.TrimRight(ws[k].text, `"')]`)
+	if !wordEnd.MatchString(ws[k].text) || abbreviation.MatchString(w) {
+		return false
+	}
+	if k+1 == len(ws) || ws[k+1].item {
+		return true
+	}
+	next := ws[k+1].text
+	i := strings.IndexFunc(next, unicode.IsLetter)
+	return i < 0 || !unicode.IsLower([]rune(next[i:])[0])
 }
 
 // replaceKeepingLines replaces each match but keeps its line breaks, so later lines keep their numbers.
@@ -208,8 +245,9 @@ var (
 	wordyPhrase = regexp.MustCompile(`(?i)\b(in order (?:to|for)|due to the fact that|owing to the fact that|at this point in time|at the present time|(?:is|are|was|were) able to|in the event that|a large number of|the majority of|for the (?:sole )?purpose of|in spite of the fact that|despite the fact that|with regard to|in regard to|prior to|subsequent to|has the ability to|have the ability to|make use of|in the near future|on a (?:daily|weekly|monthly|regular) basis|it is important to note that)\b`)
 )
 
-// markSpans: one unit per regexp match in s, with the match marked.
-func markSpans(kind string, re *regexp.Regexp, s string, base Unit) []Unit {
+// markSpans: one unit per regexp match in s, with the match marked. lineOf, when set, gives the
+// line of a byte offset in s, so each unit is anchored to the line its match is on.
+func markSpans(kind string, re *regexp.Regexp, s string, base Unit, lineOf func(int) int) []Unit {
 	var out []Unit
 	for _, m := range re.FindAllStringIndex(s, -1) {
 		if before := strings.ToLower(s[max(0, m[0]-6):m[0]]); strings.Contains(before, "not ") || strings.Contains(before, "n't ") {
@@ -217,9 +255,30 @@ func markSpans(kind string, re *regexp.Regexp, s string, base Unit) []Unit {
 		}
 		u := base
 		u.Kind, u.Text = kind, s[:m[0]]+"⟦"+s[m[0]:m[1]]+"⟧"+s[m[1]:]
+		if lineOf != nil {
+			u.Start, u.End = lineOf(m[0]), lineOf(m[1]-1)
+		}
 		out = append(out, u)
 	}
 	return out
+}
+
+// withoutQuotes drops quoted speech from s and maps a byte offset in the result back to s.
+func withoutQuotes(s string) (string, func(int) int) {
+	locs := quotedSpeech.FindAllStringIndex(s, -1)
+	raw := quotedSpeech.ReplaceAllString(s, "")
+	own := strings.TrimSpace(raw)
+	lead := len(raw) - len(strings.TrimLeft(raw, " \t"))
+	return own, func(off int) int {
+		p, shift := off+lead, 0
+		for _, l := range locs {
+			if l[0]-shift > p {
+				break
+			}
+			shift += l[1] - l[0]
+		}
+		return p + shift
+	}
 }
 
 // candidateUnits: per-word and per-sentence units for one prose block.
@@ -229,10 +288,10 @@ func candidateUnits(u Unit, header, heading, outline string) []Unit {
 	for _, sent := range blockSentences(u.Text) {
 		s := sent.text
 		toks := tagSentence(s)
-		own := strings.TrimSpace(quotedSpeech.ReplaceAllString(s, ""))
-		// Sentence-level units cover the lines the sentence spans; word units pin their word's line.
+		own, inS := withoutQuotes(s)
+		// Sentence units cover the lines the sentence spans; word and phrase units pin their own line.
 		at := Unit{File: u.File, Start: u.Start + sent.lines[0], End: u.Start + sent.lines[len(sent.lines)-1], Context: ctx}
-		out = append(out, markSpans("WordyPhrase", wordyPhrase, own, at)...)
+		out = append(out, markSpans("WordyPhrase", wordyPhrase, own, at, func(off int) int { return u.Start + sent.lineAt(inS(off)) })...)
 		if len(strings.Fields(own)) >= 3 {
 			whole := at
 			whole.Kind, whole.Text, whole.Context = "Sentence", own, ctx+"\nDOCUMENT HEADINGS: "+outline

@@ -178,3 +178,26 @@ func TestBuildFindingSpanAndQuote(t *testing.T) {
 		t.Fatalf("block finding: %+v", block)
 	}
 }
+
+func TestAbbreviationsDoNotEndSentences(t *testing.T) {
+	for in, want := range map[string][]string{
+		"See U.S. conventions for dates here.":             {"See U.S. conventions for dates here."},
+		"The flag supports json, e.g. for pipes, and csv.": {"The flag supports json, e.g. for pipes, and csv."},
+		"Add logs, metrics, etc. to the dashboard first.":  {"Add logs, metrics, etc. to the dashboard first."},
+		"Ask J. Smith about the deploy window.":            {"Ask J. Smith about the deploy window."},
+		"The build runs nightly. It takes an hour.":        {"The build runs nightly.", "It takes an hour."},
+		"Upgrade to version 1.2. Then restart it.":         {"Upgrade to version 1.2.", "Then restart it."},
+	} {
+		if got := mdSentences(in); !slices.Equal(got, want) {
+			t.Errorf("mdSentences(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestWordyPhraseAnchorsToItsLine(t *testing.T) {
+	u := Unit{Kind: "Paragraph", File: "a.md", Start: 10, End: 12, Text: "The job \"says the run is over now\" and\nretries the step until it\nis able to finish."}
+	got := unitsOf("WordyPhrase", candidateUnits(u, "", "", ""))
+	if len(got) != 1 || !strings.Contains(got[0].Text, "⟦is able to⟧") || got[0].Start != 12 || got[0].End != 12 {
+		t.Fatalf("wordy phrase units = %+v, want one on line 12", got)
+	}
+}

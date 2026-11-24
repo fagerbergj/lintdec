@@ -45,8 +45,8 @@ func TestMixedListOnlyWhenShapesDiffer(t *testing.T) {
 }
 
 func TestMarkSpansFindsStockPhrases(t *testing.T) {
-	got := markSpans("WordyPhrase", wordyPhrase, "In order to ship, the CLI is able to retry.", Unit{})
-	if neg := markSpans("WordyPhrase", wordyPhrase, "It does not have the ability to retry and is unable to wait.", Unit{}); len(neg) != 0 {
+	got := markSpans("WordyPhrase", wordyPhrase, "In order to ship, the CLI is able to retry.", Unit{}, nil)
+	if neg := markSpans("WordyPhrase", wordyPhrase, "It does not have the ability to retry and is unable to wait.", Unit{}, nil); len(neg) != 0 {
 		t.Errorf("negations have no one-word swap: %+v", neg)
 	}
 	if len(got) != 2 || got[0].Text != "⟦In order to⟧ ship, the CLI is able to retry." || !strings.Contains(got[1].Text, "⟦is able to⟧") {
