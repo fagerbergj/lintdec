@@ -491,21 +491,48 @@ func runPool(ctx context.Context, jobs []job, o lintOpts, cl *client, ch *cache,
 		tempStr := cl.cacheTemp()
 		verdicts := make(map[string]Verdict, len(j.rules))
 		var todo []Rule
+		var needVeto []Rule
 		for _, r := range j.rules {
 			if v, ok := ch.get(ch.key(cl.cacheModel(), tempStr, r.ID, cl.cacheRuleVersion(r.ID), j.unit)); ok {
 				if cl.protocol == "systemone" {
 					v = applySystemOneThreshold(v, cl.threshold)
+					if vr, hasVeto := vetoRule(r); hasVeto && v.Veto == nil && v.Confidence >= cl.vetoTrigger(r) {
+						needVeto = append(needVeto, vr)
+					}
 				}
 				verdicts[r.ID] = v
 				continue
 			}
 			todo = append(todo, r)
 		}
-		wasCached := len(todo) == 0
+		wasCached := len(todo) == 0 && len(needVeto) == 0
 		if wasCached && cl.costs != nil {
 			cl.costs.recordCachedJob()
 		}
 		errored := false
+		if len(needVeto) > 0 {
+			vv, err := runWithRetry(poolCtx, cl, job{unit: j.unit, rules: needVeto})
+			for _, vr := range needVeto {
+				resV, ok := vv[vr.ID]
+				if !ok {
+					continue
+				}
+				baseID := strings.TrimSuffix(vr.ID, "~veto")
+				p := resV.Confidence
+				cur := verdicts[baseID]
+				cur.Veto = &p
+				verdicts[baseID] = cur
+				ch.put(ch.key(cl.cacheModel(), tempStr, baseID, cl.cacheRuleVersion(baseID), j.unit), cur)
+			}
+			if err != nil && !errors.Is(err, errBudgetExhausted) {
+				errored = true
+				recordErr(j, needVeto, vv, err)
+			} else if errors.Is(err, errBudgetExhausted) {
+				mu.Lock()
+				res.budgetSkipped++
+				mu.Unlock()
+			}
+		}
 		if len(todo) > 0 {
 			v, err := runWithRetry(poolCtx, cl, job{unit: j.unit, rules: todo})
 			for id, vv := range v {

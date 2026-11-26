@@ -33,17 +33,15 @@ func TestReportableAppliesFloorAndVeto(t *testing.T) {
 	}
 }
 
-func TestWithVetoesAddsExceptionQuestionsWithoutMutatingInput(t *testing.T) {
+func TestVetoRuleBuildsExceptionQuestion(t *testing.T) {
 	flakey, _ := findRule("flakey-test")
 	todo, _ := findRule("todo-no-owner")
-	in := make([]Rule, 2, 4)
-	in[0], in[1] = flakey, todo
-	got := withVetoes(in)
-	if len(got) != 3 || got[2].ID != "flakey-test~veto" || got[2].Scope != "question" || len(in) != 2 || cap(in) == 0 {
-		t.Fatalf("withVetoes = %+v", got)
+	vr, ok := vetoRule(flakey)
+	if !ok || vr.ID != "flakey-test~veto" || vr.Scope != "question" || vr.Rubric == "" {
+		t.Fatalf("vetoRule(flakey-test) = (%+v, %v)", vr, ok)
 	}
-	if v := attachVetoes(in, map[string]Verdict{"flakey-test": {Lint: true}, "flakey-test~veto": {Confidence: 0.4}, "todo-no-owner": {}}); len(v) != 2 || v["flakey-test"].Veto == nil || *v["flakey-test"].Veto != 0.4 || v["todo-no-owner"].Veto != nil {
-		t.Fatalf("attachVetoes = %+v", v)
+	if _, ok := vetoRule(todo); ok {
+		t.Fatal("todo-no-owner should not have a veto rule")
 	}
 }
 
