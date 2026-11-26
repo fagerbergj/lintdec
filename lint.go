@@ -622,7 +622,7 @@ func splitAllFiles(files []string, active []Rule) ([]Unit, []job, int, map[strin
 			fmt.Fprintf(os.Stderr, "warn: %s: %v (skipped)\n", f, err)
 			continue
 		}
-		u := slices.DeleteFunc(splitFile(f, b), structuralComment)
+		u := filterComments(splitFile(f, b))
 		linesCache[f] = strings.Split(string(b), "\n")
 		units = append(units, u...)
 		for _, unit := range u {

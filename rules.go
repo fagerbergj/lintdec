@@ -59,6 +59,18 @@ var rules = []Rule{
 	{"incomplete-assertion", "important result goes unasserted", []string{"TestFunction"}, "whole",
 		"An important part of the result is not asserted: a (value, error) return where only one is checked, a struct where only some fields are compared after the operation, or an error case asserted without asserting the behavior the test name promises.",
 		"Google Engineering Practices, Code Review (Tests): \"Does each test make simple and useful assertions?\" https://google.github.io/eng-practices/review/reviewer/looking-for.html#tests"},
+	{"test-ignored-no-reason", "skipped test without ticket or guard", []string{"TestFunction"}, "whole",
+		"The test is unconditionally skipped or disabled without naming a tracking ticket, owner, or concrete re-enable condition, leaving dead test coverage behind.",
+		"TSR Test Smell Catalog, Ignored Test: skipped or disabled tests rot permanently when left untracked https://tsr-catalog.readthedocs.io/en/latest/smells/ignored-test.html"},
+	{"test-over-mocked", "test mocks away the behavior it claims to verify", []string{"TestFunction"}, "whole",
+		"The test mocks out the production logic it claims to test, or asserts only internal mock call choreography instead of exercising real behavior and asserting observable outputs or state.",
+		"Google SWE Book, Ch. 11 Testing Overview: test via public APIs and verify state rather than brittle mock interactions https://abseil.io/resources/swe-book/html/ch11.html"},
+	{"test-shared-state", "test mutates shared external or global state", []string{"TestFunction"}, "whole",
+		"The test writes to a fixed shared filesystem path, binds a fixed port, or mutates shared global or environment state without isolating or restoring it, allowing sibling or parallel tests to interfere.",
+		"Google SWE Book, Ch. 11 Testing Overview: \"Tests should assume as little as possible about the outside environment\" https://abseil.io/resources/swe-book/html/ch11.html"},
+	{"suppression-no-reason", "linter or type suppression without rationale", []string{"Directive"}, "whole",
+		"The linter, compiler, or type-checker suppression disables a check without stating a concrete technical reason why the suppressed code is safe or intentional.",
+		"eslint-comments/require-description & Hu et al., FSE 2025 (DOI 10.1145/3715729): unexplained suppressions accumulate obsolete bypasses and mask real defects https://eslint-community.github.io/eslint-plugin-eslint-comments/rules/require-description.html"},
 	{"comment-long", "comment longer than it earns", []string{"Comment"}, "whole",
 		"The comment runs into a multi-paragraph essay, or turns a short note into a long passage, where a decision record, a doc link, or nothing would do.",
 		"Google C++ Style Guide, Function Comments: \"However, do not be unnecessarily verbose or state the completely obvious.\" https://google.github.io/styleguide/cppguide.html#Function_Comments"},
@@ -161,13 +173,17 @@ var rules = []Rule{
 	{"md-one-sided-alternatives", "rejected alternatives get no fair hearing", []string{"Document"}, "whole",
 		"The document records or proposes a decision, names alternatives it did not choose, and gives none of them a real advantage: each is listed only to be dismissed.",
 		"D-09 · Martin Fowler, Architecture Decision Record: \"explicitly list all the serious alternatives that were considered, together with their pros and cons\" https://martinfowler.com/bliki/ArchitectureDecisionRecord.html"},
+	{"md-no-remediation", "error or troubleshooting section omits how to fix it", []string{"Section"}, "whole",
+		"The troubleshooting, warning, or error section describes a failure or symptom without stating a concrete remediation step, workaround, or diagnostic action the reader can take.",
+		"OpenSSF Scorecard Check Docs & Google Tricorder: error and check docs must pair each failure with actionable remediation steps https://github.com/ossf/scorecard/blob/main/docs/checks.md"},
 }
 
 // ruleLevel: each rule's fixed severity. Jev's score only decides whether a finding is reported.
 var ruleLevel = map[string]string{
 	"swallowed-error": "error", "flakey-test": "error",
-	"tautology-test":           "error",
+	"tautology-test": "error", "test-shared-state": "error",
 	"comment-contradicts-code": "warning", "name-mismatch": "warning", "stub-body": "warning", "incomplete-assertion": "warning", "iface-leaky": "warning",
+	"test-ignored-no-reason": "warning", "test-over-mocked": "warning", "suppression-no-reason": "warning",
 	"iface-god-method": "warning", "file-several-jobs": "warning",
 	"comment-long": "info", "comment-tautology": "info", "comment-hedge": "info",
 	"comment-excuse": "info", "comment-history": "info", "todo-no-owner": "info",
@@ -192,6 +208,7 @@ var ruleLevel = map[string]string{
 	"md-adr-many-decisions":     "warning",
 	"md-adr-no-cost":            "warning",
 	"md-one-sided-alternatives": "info",
+	"md-no-remediation":         "warning",
 }
 
 func init() {

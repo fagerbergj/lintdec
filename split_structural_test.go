@@ -25,6 +25,36 @@ func TestStructuralCommentsAreNotLinted(t *testing.T) {
 	}
 }
 
+// filterComments checks structuralComment first, then routes suppression directives to Directive.
+func TestFilterCommentsReKindsSuppressions(t *testing.T) {
+	in := []Unit{
+		{Kind: "Comment", Text: "// ----"},
+		{Kind: "Comment", Text: "//go:embed foo"},
+		{Kind: "Comment", Text: "// eslint-disable-next-line no-any"},
+		{Kind: "Comment", Text: "// @ts-expect-error legacy wire payload"},
+		{Kind: "Comment", Text: "# ruff: noqa: E501"},
+		{Kind: "Comment", Text: "# flake8: noqa"},
+		{Kind: "Comment", Text: "#pragma warning disable CA1303"},
+		{Kind: "Comment", Text: "<!-- markdownlint-disable MD013 -->"},
+		{Kind: "Comment", Text: "{/* eslint-disable-next-line react/no-danger */}"},
+		{Kind: "Comment", Text: "# rubocop:disable Metrics/AbcSize"},
+		{Kind: "Comment", Text: "// parseHand builds one hand from the deal. The linter flags the shadow,\n// but the second return is deliberate.\n//nolint:govet"},
+		{Kind: "Comment", Text: "// Normal explanation comment."},
+	}
+	got := filterComments(in)
+	if len(got) != 10 {
+		t.Fatalf("want 10 surviving units (8 Directive + 2 Comment), got %d: %+v", len(got), got)
+	}
+	for i := range 8 {
+		if got[i].Kind != "Directive" {
+			t.Fatalf("got[%d] = %s (%q), want Directive", i, got[i].Kind, got[i].Text)
+		}
+	}
+	if got[8].Kind != "Comment" || got[9].Kind != "Comment" {
+		t.Fatalf("mixed prose+nolint and normal comments must stay Comment: %+v", got[8:])
+	}
+}
+
 func TestPlaceholderBody(t *testing.T) {
 	cases := map[string]bool{
 		"<!-- list channels -->":                   true,

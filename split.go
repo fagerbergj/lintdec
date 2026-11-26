@@ -15,7 +15,7 @@ import (
 // Unit is one lintable slice of a file. Context is reference-only text the judgment
 // needs: surrounding code for comments, the doc comment for declarations.
 type Unit struct {
-	Kind         string // TestFunction, Function, Script, Interface, Comment, Paragraph, Bullet, File
+	Kind         string // TestFunction, Function, Script, Interface, Comment, Directive, Paragraph, Bullet, File
 	File         string
 	Start        int
 	End          int
@@ -565,10 +565,41 @@ func digestFor(u Unit, lines []string) string {
 }
 
 var (
-	commentMarker = regexp.MustCompile(`^\s*(//+|#+|/\*+|\*+/?|--|;+)\s?`)
-	ruleLine      = regexp.MustCompile(`^[^\p{L}\p{N}]{3,}$`)
-	toolDirective = regexp.MustCompile(`^(shellcheck|eslint|prettier-ignore|@ts-|nolint|noqa|go:|lint:|lintdec:ignore|pylint|type: ?ignore|istanbul|c8 |biome-ignore|ktlint|tslint|jshint|NOSONAR|region|endregion)`)
+	commentMarker        = regexp.MustCompile(`^\s*(//+|#+|/\*+|\*+/?|--|;+|<!--|\{\s*/\*+)\s?`)
+	ruleLine             = regexp.MustCompile(`^[^\p{L}\p{N}]{3,}$`)
+	toolDirective        = regexp.MustCompile(`(?i)^(?:shellcheck|eslint|prettier-ignore|@ts-|nolint|noqa|ruff:\s*noqa|flake8:\s*noqa|pragma\s+warning\s+disable|markdownlint-disable|rubocop|go:|lint:|lintdec:ignore|pylint|type:\s*ignore|istanbul|c8 |biome-ignore|ktlint|tslint|jshint|NOSONAR|region|endregion)`)
+	suppressionDirective = regexp.MustCompile(`(?i)^(?:eslint-disable|@ts-ignore|@ts-expect-error|nolint|noqa|ruff:\s*noqa|flake8:\s*noqa|pragma\s+warning\s+disable|markdownlint-disable|type:\s*ignore|biome-ignore|pylint:\s*disable|rubocop:disable|ktlint-disable|NOSONAR|istanbul ignore|c8 ignore|shellcheck disable)`)
 )
+
+func isSuppressionComment(u Unit) bool {
+	if u.Kind != "Comment" {
+		return false
+	}
+	for line := range strings.SplitSeq(u.Text, "\n") {
+		t := strings.TrimSpace(commentMarker.ReplaceAllString(line, ""))
+		if suppressionDirective.MatchString(t) {
+			return true
+		}
+	}
+	return false
+}
+
+// filterComments filters units in place: pure suppression directives become Directive units,
+// other structural banners/directives are dropped, and prose (including mixed prose+directive blocks) stays Comment.
+func filterComments(units []Unit) []Unit {
+	out := units[:0]
+	for _, u := range units {
+		if structuralComment(u) {
+			if isSuppressionComment(u) {
+				u.Kind = "Directive"
+				out = append(out, u)
+			}
+			continue
+		}
+		out = append(out, u)
+	}
+	return out
+}
 
 // structuralComment: section banners and tool directives look like comments but say nothing to lint,
 // and Jev flags them as tautologies.
