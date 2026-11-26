@@ -405,9 +405,17 @@ func digestFor(u Unit, lines []string) string {
 		keep := ln <= u.Start+2
 		if !keep {
 			switch {
-			case strings.HasPrefix(s, "if "), strings.HasPrefix(s, "switch "), strings.HasPrefix(s, "for "),
+			case strings.HasPrefix(s, "if "), strings.HasPrefix(s, "if("),
+				strings.HasPrefix(s, "switch "), strings.HasPrefix(s, "switch("),
+				strings.HasPrefix(s, "for "), strings.HasPrefix(s, "for("),
+				strings.HasPrefix(s, "while "), strings.HasPrefix(s, "while("),
+				strings.HasPrefix(s, "try "), strings.HasPrefix(s, "try{"), strings.HasPrefix(s, "try:"),
+				strings.HasPrefix(s, "catch "), strings.HasPrefix(s, "catch("), strings.HasPrefix(s, "catch{"),
+				strings.HasPrefix(s, "except "), strings.HasPrefix(s, "except:"),
+				strings.HasPrefix(s, "throw "), strings.HasPrefix(s, "raise "),
 				strings.HasPrefix(s, "return "), strings.HasPrefix(s, "defer "), strings.HasPrefix(s, "go "),
-				strings.Contains(s, "assert."), strings.Contains(s, "require."),
+				strings.Contains(s, "assert."), strings.Contains(s, "assert("), strings.Contains(s, "expect("),
+				strings.Contains(s, "require."),
 				strings.Contains(s, "t.Error"), strings.Contains(s, "t.Fatal"), strings.Contains(s, "t.Log"):
 				keep = true
 			}
