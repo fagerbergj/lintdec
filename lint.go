@@ -158,7 +158,7 @@ func collectFiles(paths, include, exclude []string) ([]string, error) {
 		if err != nil || st.IsDir() {
 			return
 		}
-		if !explicit && (matchAnyGlob(exclude, p) || (len(include) > 0 && !matchAnyGlob(include, p))) {
+		if !explicit && !fileSelected(p, p, include, exclude) {
 			return
 		}
 		if st.Size() > 1<<20 {
@@ -679,6 +679,21 @@ func resolveGlobs(o lintOpts, pc ProjectConfig) (include, exclude []string) {
 		exclude = strings.Split(o.exclude, ",")
 	}
 	return include, exclude
+}
+
+// fileSelected reports whether rel passes include/exclude globs, matching
+// extensionless shell scripts with a shebang against shell globs on both sides.
+func fileSelected(fsPath, rel string, include, exclude []string) bool {
+	if matchAnyGlob(exclude, rel) {
+		return false
+	}
+	if extOf(rel) == "" && matchAnyGlob(exclude, "script.sh") && hasShellShebangFile(fsPath) {
+		return false
+	}
+	if len(include) == 0 || matchAnyGlob(include, rel) {
+		return true
+	}
+	return extOf(rel) == "" && matchAnyGlob(include, "script.sh") && hasShellShebangFile(fsPath)
 }
 
 func dumpUnits(files []string, units []Unit, jobs []job, decisions int, active []Rule) {

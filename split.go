@@ -6,6 +6,7 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"path"
 	"regexp"
 	"slices"
 	"strings"
@@ -14,7 +15,7 @@ import (
 // Unit is one lintable slice of a file. Context is reference-only text the judgment
 // needs: surrounding code for comments, the doc comment for declarations.
 type Unit struct {
-	Kind         string // TestFunction, Function, Interface, Comment, Paragraph, Bullet, File
+	Kind         string // TestFunction, Function, Script, Interface, Comment, Paragraph, Bullet, File
 	File         string
 	Start        int
 	End          int
@@ -28,25 +29,30 @@ type Unit struct {
 // local rules get windows and whole rules get a digest.
 const rawBudgetLines = 200
 
-func splitFile(path string, src []byte) []Unit {
-	switch {
-	case strings.HasSuffix(path, ".go"):
-		return attachTestHelpers(splitGo(path, src))
-	case strings.HasSuffix(path, ".md") || strings.HasSuffix(path, ".markdown"):
-		return splitMarkdown(path, src)
+func splitFile(filePath string, src []byte) []Unit {
+	ext := extOf(filePath)
+	switch ext {
+	case ".go":
+		return attachTestHelpers(splitGo(filePath, src))
+	case ".md", ".markdown":
+		return splitMarkdown(filePath, src)
 	}
-	if key, ok := tsExt[extOf(path)]; ok {
-		return attachTestHelpers(splitTree(path, src, tsLangs[key]))
+	if key, ok := tsExt[ext]; ok {
+		return attachTestHelpers(splitTree(filePath, src, tsLangs[key]))
+	}
+	if ext == "" && isShellShebang(src) {
+		return attachTestHelpers(splitTree(filePath, src, tsLangs["sh"]))
 	}
 	return nil
 }
 
-func extOf(path string) string {
-	i := strings.LastIndex(path, ".")
-	if i < 0 {
+func extOf(filePath string) string {
+	base := path.Base(filePath)
+	i := strings.LastIndex(base, ".")
+	if i <= 0 {
 		return ""
 	}
-	return strings.ToLower(path[i:])
+	return strings.ToLower(base[i:])
 }
 
 func splitGo(path string, src []byte) []Unit {
