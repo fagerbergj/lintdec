@@ -210,7 +210,7 @@ const mdWholeLines = 400
 type mdHeading struct{ level, line int }
 
 // addMarkdownStructure gives each block its heading path, previous block, and next line,
-// and adds a Section unit per H2+ heading and one Document unit per file.
+// and adds Section and Document units for sections and files under mdWholeLines.
 func addMarkdownStructure(path string, lines []string, units []Unit) []Unit {
 	heads, paths := headingPaths(lines)
 	units = slices.DeleteFunc(units, notAuthorProse)

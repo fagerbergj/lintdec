@@ -6,9 +6,11 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
+	"go/scanner"
 	"go/token"
 	"hash/fnv"
 	"os"
@@ -143,7 +145,13 @@ func lintSource(rel string, src []byte, rs []span) []finding {
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, rel, src, parser.ParseComments)
 	if err != nil {
-		return nil
+		// Unparseable files cannot be range-screened by rs, so fail loudly at the syntax error line.
+		line, msg := 1, err.Error()
+		var errs scanner.ErrorList
+		if errors.As(err, &errs) && len(errs) > 0 {
+			line, msg = errs[0].Pos.Line, errs[0].Msg
+		}
+		return []finding{{file: rel, line: line, message: "parse error: " + msg}}
 	}
 	var out []finding
 	out = append(out, commentRunFindings(rel, fset, f, rs)...)

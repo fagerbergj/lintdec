@@ -28,12 +28,27 @@ func TestCacheKeysIncludeProviderEndpoint(t *testing.T) {
 func TestFollowUpDoesNotRequeryAnsweredRules(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
 		n := calls.Add(1)
 		var content string
 		if n == 1 {
 			// Omit todo-no-owner on first call; answer comment-long.
 			content = `{"comment-long":{"lint":false}}`
 		} else {
+			user := ""
+			if len(req.Messages) > 0 {
+				user = req.Messages[len(req.Messages)-1].Content
+			}
+			if user == "" || strings.Contains(user, "comment-long") || !strings.Contains(user, "todo-no-owner") {
+				t.Errorf("follow-up must ask only for missing rule, got prompt:\n%s", user)
+			}
 			// Obey follow-up: reply with ONLY the missing rule.
 			content = `{"todo-no-owner":{"lint":true,"severity":"med","confidence":0.9,"line":1,"reason":"no owner"}}`
 		}
