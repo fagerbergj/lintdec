@@ -26,9 +26,6 @@ func TestRuleEligibleDeterministicFilters(t *testing.T) {
 		{"comment-long", Unit{Kind: "Comment", Start: 1, End: 3, Text: "// one\n// two\n// three"}, true},
 		{"comment-long", Unit{Kind: "Comment", Start: 1, End: 1, Text: longSingleLine}, true},
 
-		{"md-topic-sentence", Unit{Kind: "Paragraph", Text: "First sentence here. Second sentence here."}, false},
-		{"md-topic-sentence", Unit{Kind: "Paragraph", Text: "First sentence here. Second sentence here. Third sentence here."}, true},
-
 		{"md-prose-list", Unit{Kind: "Paragraph", Text: "A single clear sentence with no list."}, false},
 		{"md-prose-list", Unit{Kind: "Paragraph", Text: "Items are alpha, beta, and gamma."}, true},
 		{"md-prose-list", Unit{Kind: "Paragraph", Text: "Items are alpha, beta and gamma."}, true},

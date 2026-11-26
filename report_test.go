@@ -1003,8 +1003,8 @@ func TestCollapsePerFileKeepsFirstLineWithCount(t *testing.T) {
 		{Rule: "md-wordy-phrase", File: "a.md", Line: 9, Message: "wordy"},
 		{Rule: "md-wordy-phrase", File: "a.md", Line: 3, Message: "wordy"},
 		{Rule: "md-wordy-phrase", File: "b.md", Line: 1, Message: "wordy"},
-		{Rule: "md-marketing", File: "a.md", Line: 5, Message: "hype"},
-		{Rule: "md-marketing", File: "a.md", Line: 6, Message: "hype"},
+		{Rule: "md-prose-list", File: "a.md", Line: 5, Message: "list"},
+		{Rule: "md-prose-list", File: "a.md", Line: 6, Message: "list"},
 	}
 	got := collapsePerFile(in)
 	if len(got) != 4 || got[0].Line != 3 || got[0].Message != "wordy (2 places in this file)" || got[1].Message != "wordy" {

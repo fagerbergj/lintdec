@@ -14,9 +14,6 @@ func TestCandidateUnitsMarkOneWordPerQuestion(t *testing.T) {
 	if !strings.Contains(got["ActorVerb"], "⟦lied⟧") || strings.Contains(got["ActorVerb"], "⟦know⟧") || strings.Contains(got["ActorVerb"], "⟦knows⟧") || strings.Contains(got["ActorVerb"], "⟦feel⟧") || strings.Contains(got["ActorVerb"], "⟦wanted⟧") || strings.Contains(got["ActorVerb"], "⟦want⟧") {
 		t.Errorf("ActorVerb candidates = %q", got["ActorVerb"])
 	}
-	if !strings.Contains(got["NounVerb"], "⟦PR⟧ it") {
-		t.Errorf("NounVerb candidates = %q", got["NounVerb"])
-	}
 }
 
 func TestMdSentencesDropsMarkupAndShortFragments(t *testing.T) {

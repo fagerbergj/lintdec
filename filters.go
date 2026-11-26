@@ -29,7 +29,6 @@ var (
 var ruleFilters = map[string]func(Unit) bool{
 	"todo-no-owner":             func(u Unit) bool { return todoTagRe.MatchString(u.Text) },
 	"comment-long":              func(u Unit) bool { return u.End-u.Start+1 >= 3 || len(strings.Fields(u.Text)) >= 50 },
-	"md-topic-sentence":         func(u Unit) bool { return len(blockSentences(u.Text)) >= 3 },
 	"md-prose-list":             func(u Unit) bool { return hasInlineListPunct(u.Text) },
 	"md-no-purpose":             func(u Unit) bool { return nonEmptyLines(u.Text) >= 3 },
 	"md-blames-reader":          func(u Unit) bool { return readerRefRe.MatchString(u.Text) },

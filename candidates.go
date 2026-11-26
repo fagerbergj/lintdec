@@ -15,7 +15,7 @@ import (
 // word, the split Clark, Martin & Mahowald (arXiv:2610.29162) used with Jev.
 
 // spanKinds are units whose Text is one sentence with the judged word marked ⟦like this⟧.
-var spanKinds = map[string]bool{"ActorVerb": true, "NounVerb": true, "WordyPhrase": true}
+var spanKinds = map[string]bool{"ActorVerb": true, "WordyPhrase": true}
 
 // tagModel is loaded once; nil (tagging off) if the embedded model fails to load.
 var tagModel = sync.OnceValue(func() *prose.Model {
@@ -176,17 +176,10 @@ var mindVerbs = toSet("know knows knew want wants wanted think thinks thought be
 	"pretend pretends worry worries trust trusts realize realizes realized notice notices prefer prefers " +
 	"enjoy enjoys complain complains insist insists agree agrees disagree disagrees")
 
-// plainVerbs are common verbs that only waste a Jev call as noun-as-verb candidates.
-var plainVerbs = toSet("is are was were be been has have had does do did can could will would should may might must " +
-	"use run call make take give get set add keep see read write send open close move check list name record " +
-	"delete create update test edit change mention trigger grant pilot merge commit deploy push pull cannot")
-
 var personPronouns = toSet("i you he she we they who someone everyone anyone people " +
 	"user users engineer engineers developer developers team teams owner owners reviewer reviewers admin admins " +
 	"customer customers author authors reader readers operator operators member members maintainer maintainers " +
 	"agent agents llm llms model models assistant assistants")
-
-var wordToken = regexp.MustCompile(`^[A-Za-z][a-z]+$|^[A-Z]{2,}s?$`)
 
 func toSet(words string) map[string]bool {
 	m := map[string]bool{}
@@ -218,24 +211,6 @@ func thingSubject(s tagged) bool {
 	}
 	return strings.HasPrefix(s.tag, "NN") || s.text == ")" || (s.tag == "PRP" && strings.EqualFold(s.text, "it")) ||
 		((s.tag == "DT" || s.tag == "WDT") && thingDeterminers[strings.ToLower(s.text)])
-}
-
-var objectWords = toSet("it them this that these those everything me us")
-var verbLead = toSet(", ; : and then to just please can should will must so or")
-
-// nounVerb: a word in verb position (before an object pronoun, after a sentence start or
-// modal) that is a capitalized name, an acronym, or a word the tagger reads as a noun.
-func nounVerb(toks []tagged, i int) bool {
-	t := toks[i]
-	w := strings.ToLower(t.text)
-	if plainVerbs[w] || !wordToken.MatchString(t.text) || i+1 >= len(toks) || !objectWords[strings.ToLower(toks[i+1].text)] {
-		return false
-	}
-	if i > 0 && !verbLead[strings.ToLower(toks[i-1].text)] && !strings.HasPrefix(toks[i-1].tag, "RB") {
-		return false
-	}
-	acronym := strings.ToUpper(t.text) == t.text && strings.ToLower(t.text) != t.text
-	return strings.HasPrefix(t.tag, "NN") || acronym || (strings.HasPrefix(t.tag, "VB") && i > 0 && t.text[0] >= 'A' && t.text[0] <= 'Z')
 }
 
 // quotedSpeech: quotations of four or more words are someone else's wording, not the author's.
@@ -294,18 +269,12 @@ func candidateUnits(u Unit, header, heading string) []Unit {
 		at := Unit{File: u.File, Context: ctx}
 		out = append(out, markSpans("WordyPhrase", wordyPhrase, own, at, func(off int) int { return u.Start + sent.lineAt(inS(off)) })...)
 		for i := range toks {
-			var kind string
-			switch {
-			case actorVerb(toks, i):
-				kind = "ActorVerb"
-			case nounVerb(toks, i):
-				kind = "NounVerb"
-			default:
+			if !actorVerb(toks, i) {
 				continue
 			}
 			if m, off := mark(s, toks, i); m != "" {
 				ln := u.Start + sent.lineAt(off)
-				out = append(out, Unit{Kind: kind, File: u.File, Start: ln, End: ln, Text: m, Context: ctx})
+				out = append(out, Unit{Kind: "ActorVerb", File: u.File, Start: ln, End: ln, Text: m, Context: ctx})
 			}
 		}
 	}
@@ -428,31 +397,4 @@ func mixedList(u Unit) (Unit, bool) {
 	}
 	u.Kind = "MixedList"
 	return u, true
-}
-
-// stepUnits splits a Steps block into one Step unit per top-level numbered item,
-// anchored to its own line span with the full list in Context for the veto check.
-func stepUnits(u Unit) []Unit {
-	items := topLevelItems(u.Text, true)
-	lastLine := strings.Count(u.Text, "\n")
-	// Inherited block-level headers (HEADING, PREVIOUS BLOCK, POSITION) apply to every step;
-	// NEXT LINE follows the whole list, so relabel it for non-final steps before appending LIST.
-	nonFinalCtx := u.Context
-	if i := strings.LastIndex(nonFinalCtx, "\nNEXT LINE: "); i >= 0 {
-		nonFinalCtx = nonFinalCtx[:i] + "\nAFTER THE LIST: " + nonFinalCtx[i+len("\nNEXT LINE: "):]
-	}
-	listSuffix := "\nLIST:\n" + u.Text
-	out := make([]Unit, 0, len(items))
-	for _, it := range items {
-		baseCtx := u.Context
-		if it.end < lastLine {
-			baseCtx = nonFinalCtx
-		}
-		out = append(out, Unit{
-			Kind: "Step", File: u.File,
-			Start: u.Start + it.start, End: u.Start + it.end,
-			Text: strings.Join(it.lines, "\n"), Context: baseCtx + listSuffix,
-		})
-	}
-	return out
 }
