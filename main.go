@@ -82,7 +82,7 @@ Lint flags:
   --workers N           parallel model calls (default 8)
   --budget N            max model calls this run, 0 = unlimited
   --temperature 0       sampling temperature
-  --threshold 0.5       noul probability threshold for systemone providers; rules add their own floors
+  --threshold 0.5       minimum confidence to report (overrides per-rule floors, keeps vetoes)
   --no-cache            bypass ~/.cache/lintdec/cache
   --no-ignore           report findings despite inline //lintdec:ignore
   --ledger FILE         append findings as JSONL to FILE as they are decided

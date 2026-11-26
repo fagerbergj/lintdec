@@ -28,10 +28,11 @@ type client struct {
 	trustCost bool
 	costs     *costAccumulator
 	budget    *requestBudget
-	temp      float64
-	threshold float64
-	calibrate bool
-	httpc     *http.Client
+	temp         float64
+	threshold    float64
+	thresholdSet bool
+	calibrate    bool
+	httpc        *http.Client
 }
 
 var errBudgetExhausted = errors.New("model request budget exhausted")
@@ -72,6 +73,13 @@ func (c *client) cacheRuleVersion(ruleID string) string {
 		return ruleVersion(ruleID)
 	}
 	return allRulesVersion
+}
+
+func (c *client) floorOverride() float64 {
+	if c.thresholdSet {
+		return c.threshold
+	}
+	return 0
 }
 
 type Verdict struct {
@@ -351,59 +359,63 @@ func decodeCompletion(body io.Reader, usage **chatUsage) (string, error) {
 	return "", nil
 }
 
-// extractJSONObject finds the last balanced {...} object so prose or reasoning
-// text mentioning braces earlier in the reply does not break JSON decoding.
-func extractJSONObject(raw string) (string, bool) {
-	end := strings.LastIndex(raw, "}")
-	if end < 0 {
-		return "", false
-	}
-	inStr, esc, depth, lastOpen := false, false, 0, -1
-	for i := 0; i <= end; i++ {
-		ch := raw[i]
-		if esc {
-			esc = false
+// extractVerdictMap scans valid top-level JSON objects in raw, preferring the
+// last object keyed by any expected rule id over stray braces in prose.
+func extractVerdictMap(raw string, rules []Rule) (map[string]json.RawMessage, error) {
+	var bestMatch, bestAny map[string]json.RawMessage
+	for i := 0; i < len(raw); i++ {
+		if raw[i] != '{' {
 			continue
 		}
-		if inStr {
-			esc = ch == '\\'
-			inStr = ch != '"'
+		dec := json.NewDecoder(strings.NewReader(raw[i:]))
+		var m map[string]json.RawMessage
+		if err := dec.Decode(&m); err != nil {
 			continue
 		}
-		switch ch {
-		case '"':
-			inStr = true
-		case '{':
-			if depth == 0 {
-				lastOpen = i
-			}
-			depth++
-		case '}':
-			if depth > 0 {
-				depth--
-				if depth == 0 && i == end && lastOpen >= 0 {
-					return raw[lastOpen : end+1], true
-				}
-			}
+		bestAny = m
+		if matchesAnyRule(m, rules) {
+			bestMatch = m
+		}
+		if off := int(dec.InputOffset()); off > 1 {
+			i += off - 1
 		}
 	}
-	s := strings.Index(raw, "{")
-	if s < 0 || end <= s {
-		return "", false
+	if bestMatch != nil {
+		return bestMatch, nil
 	}
-	return raw[s : end+1], true
+	if bestAny != nil {
+		return bestAny, nil
+	}
+	return fallbackVerdictError(raw)
+}
+
+func matchesAnyRule(m map[string]json.RawMessage, rules []Rule) bool {
+	for i, r := range rules {
+		if _, ok := m[r.ID]; ok {
+			return true
+		}
+		if _, ok := m[fmt.Sprint(i+1)]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func fallbackVerdictError(raw string) (map[string]json.RawMessage, error) {
+	s, e := strings.Index(raw, "{"), strings.LastIndex(raw, "}")
+	if s < 0 || e <= s {
+		return nil, fmt.Errorf("no JSON in model reply: %.80q", raw)
+	}
+	var m map[string]json.RawMessage
+	return nil, fmt.Errorf("bad model JSON: %w", json.Unmarshal([]byte(raw[s:e+1]), &m))
 }
 
 // parseVerdicts extracts the rule-id → verdict map. It returns the verdicts
 // parsed so far plus the ids the model omitted; malformed JSON is an error.
 func parseVerdicts(raw string, j job) (map[string]Verdict, []string, error) {
-	blob, ok := extractJSONObject(raw)
-	if !ok {
-		return nil, nil, fmt.Errorf("no JSON in model reply: %.80q", raw)
-	}
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(blob), &m); err != nil {
-		return nil, nil, fmt.Errorf("bad model JSON: %w", err)
+	m, err := extractVerdictMap(raw, j.rules)
+	if err != nil {
+		return nil, nil, err
 	}
 	out := make(map[string]Verdict, len(j.rules))
 	var missing []string
