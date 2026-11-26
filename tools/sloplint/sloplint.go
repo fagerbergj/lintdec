@@ -143,7 +143,7 @@ func lintSource(rel string, src []byte, rs []span) []finding {
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, rel, src, parser.ParseComments)
 	if err != nil {
-		return nil
+		return []finding{{file: rel, line: 1, message: fmt.Sprintf("parse error: %v", err)}}
 	}
 	var out []finding
 	out = append(out, commentRunFindings(rel, fset, f, rs)...)

@@ -296,6 +296,10 @@ func TestProviderWizardHuhOnlyShowsRelevantFields(t *testing.T) {
 					t.Fatalf("step %d: wanted %q, got %q", i, title, view)
 				}
 			}
+			f.NextGroup()
+			if f.State != huh.StateCompleted {
+				t.Fatalf("expected form to complete after %d steps, got extra step: %q", len(tc.titles), ansi.Strip(f.View()))
+			}
 		})
 	}
 }

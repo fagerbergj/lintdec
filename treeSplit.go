@@ -227,7 +227,6 @@ func isUnitStart(n *sitter.Node, cfg tsCfg, src []byte) bool {
 	return kindForNode(n, cfg, src) != ""
 }
 
-// attachesDoc: whether comment c is the doc for the sibling after it.
 func attachesDoc(c *sitter.Node, cfg tsCfg, src []byte) bool {
 	next := c.NextSibling()
 	return next != nil && isUnitStart(next, cfg, src) && c.EndPoint().Row+1 == next.StartPoint().Row

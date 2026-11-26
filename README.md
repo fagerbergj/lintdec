@@ -67,9 +67,20 @@ lintdec --budget 100 --severity warning --out jsonl --quiet . > findings.jsonl
 
 `--diff` compares the working tree with the merge base, including untracked files not ignored by Git. It checks whole touched units, so findings can be on old lines; deletions can select adjacent units. Deleted files and symlinks are skipped, and an invalid or empty base fails.
 
-`--budget` caps inference requests, including retries and follow-ups, not dollars. An incomplete budget-limited run exits 2. Each rule has a fixed level (`error`, `warning`, or `info`); `--severity warning` reports warnings and errors. Each rule also has a confidence floor, and documentation rules ask their exception as a separate question; both were measured on Jev, so with a chat model the rules run on their floors alone (passing `--threshold` explicitly overrides per-rule floors while keeping vetoes active). Cost is provider-reported, a known subtotal, or `unknown`; OpenRouter may omit separate BYOK charges. Cached checks can avoid model calls.
+`--budget` caps inference requests, including retries and follow-ups, not dollars. An incomplete budget-limited run exits 2. Each rule has a fixed level (`error`, `warning`, or `info`); `--severity warning` reports warnings and errors.
 
-Exit codes: `0` no findings at the chosen severity, `1` findings, `2` error or incomplete run, `130` interrupted. Some checks can fail even when the exit code is 0 or 1; check stderr. Ctrl-C flushes findings collected so far.
+Each rule also has a confidence floor, and documentation rules ask their exception as a separate question. Both were measured on Jev, so chat models run on floors alone; passing `--threshold` explicitly overrides per-rule floors while keeping vetoes active.
+
+Cost is provider-reported, a known subtotal, or `unknown`; OpenRouter may omit separate BYOK charges. Cached checks avoid model calls.
+
+Exit codes:
+
+- `0`: no findings at the chosen severity
+- `1`: findings reported
+- `2`: error or incomplete run
+- `130`: interrupted
+
+Some checks can fail even when the exit code is 0 or 1; check stderr. Ctrl-C flushes findings collected so far.
 
 ## Scope and safety
 

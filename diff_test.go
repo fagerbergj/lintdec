@@ -494,7 +494,11 @@ func TestDiffIgnoresGitInterHunkContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if changes[filepath.Join(dir, "sample.go")].changed(3) {
+	sample := changes[filepath.Join(dir, "sample.go")]
+	if !sample.changed(2) || !sample.changed(4) {
+		t.Fatalf("modified lines 2 and 4 must be marked changed: %#v", changes)
+	}
+	if sample.changed(3) {
 		t.Fatalf("unchanged middle unit marked changed: %#v", changes)
 	}
 }
