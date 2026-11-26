@@ -21,6 +21,7 @@ type Unit struct {
 	Text         string
 	Context      string
 	ContextStart int
+	name         string // declared function name for top-level helper lookup (not cached)
 }
 
 // rawBudgetLines: units at or below this go to the model verbatim; above it,
@@ -30,12 +31,12 @@ const rawBudgetLines = 200
 func splitFile(path string, src []byte) []Unit {
 	switch {
 	case strings.HasSuffix(path, ".go"):
-		return splitGo(path, src)
+		return attachTestHelpers(splitGo(path, src))
 	case strings.HasSuffix(path, ".md") || strings.HasSuffix(path, ".markdown"):
 		return splitMarkdown(path, src)
 	}
 	if key, ok := tsExt[extOf(path)]; ok {
-		return splitTree(path, src, tsLangs[key])
+		return attachTestHelpers(splitTree(path, src, tsLangs[key]))
 	}
 	return nil
 }
@@ -79,6 +80,7 @@ func splitGo(path string, src []byte) []Unit {
 				end = d.Body.End()
 			}
 			add(kind, d.Pos(), end, "")
+			units[len(units)-1].name = goTopFuncName(d)
 			if d.Doc != nil {
 				units[len(units)-1].ContextStart = fset.Position(d.Doc.Pos()).Line
 				units[len(units)-1].Context = strings.TrimSpace(d.Doc.Text())
@@ -105,6 +107,13 @@ func splitGo(path string, src []byte) []Unit {
 	return units
 }
 
+func goTopFuncName(d *ast.FuncDecl) string {
+	if d.Recv != nil {
+		return ""
+	}
+	return d.Name.Name
+}
+
 // goSkeleton: one unit per Go file listing declarations with line numbers.
 func goSkeleton(fset *token.FileSet, f *ast.File, path string, lines []string) Unit {
 	sk := []string{fmt.Sprintf("file %s (lines 1-%d)", path, len(lines))}
@@ -127,8 +136,8 @@ func specDoc(d *ast.GenDecl, ts *ast.TypeSpec) *ast.CommentGroup {
 	return ts.Doc
 }
 
-// goCommentContext: a comment in or above a declaration also sees all of it, so
-// claims about code past the 8-line window can be checked.
+// goCommentContext: a comment in or above a bounded declaration sees that
+// declaration alone so unrelated neighbors do not dilute doc-comment checks.
 func goCommentContext(fset *token.FileSet, f *ast.File, lines []string, g *ast.CommentGroup) string {
 	s, e := fset.Position(g.Pos()).Line, fset.Position(g.End()).Line
 	for _, d := range f.Decls {
@@ -140,10 +149,103 @@ func goCommentContext(fset *token.FileSet, f *ast.File, lines []string, g *ast.C
 		}
 		ds, de := fset.Position(start).Line, min(fset.Position(d.End()).Line, len(lines))
 		if ds <= s && e <= de && de-ds <= rawBudgetLines {
-			return numberedContext(lines, min(ds, s-8), max(de, e+8), s, e)
+			if ctx := numberedContext(lines, ds, de, s, e); ctx != "" {
+				return ctx
+			}
 		}
 	}
 	return commentContext(lines, s, e)
+}
+
+// Bounds on same-file helper bodies attached to a TestFunction's Context.
+const (
+	maxTestHelperLines = 30
+	maxTestHelperTotal = 50
+)
+
+type testHelper struct {
+	name  string
+	lines int
+	text  string
+}
+
+// attachTestHelpers adds short same-file helper functions called by a TestFunction
+// into its Context so rules can see fake clocks and assertion helpers.
+func attachTestHelpers(units []Unit) []Unit {
+	var helpers []testHelper
+	hasTest := false
+	for _, u := range units {
+		if u.Kind == "TestFunction" {
+			hasTest = true
+		} else if u.Kind == "Function" && u.End-u.Start+1 <= maxTestHelperLines && len(u.name) >= 3 {
+			// skip 1-2 char names (e.g. f, fn) that collide with local variables
+			helpers = append(helpers, testHelper{name: u.name, lines: u.End - u.Start + 1, text: numberedLines(u.Text, u.Start)})
+		}
+	}
+	if !hasTest || len(helpers) == 0 {
+		return units
+	}
+	for i := range units {
+		if units[i].Kind == "TestFunction" {
+			appendHelperContext(&units[i], helpers)
+		}
+	}
+	return units
+}
+
+func appendHelperContext(u *Unit, helpers []testHelper) {
+	var refs []string
+	used := 0
+	for _, h := range helpers {
+		if !callsHelper(u.Text, h.name) || used+h.lines > maxTestHelperTotal {
+			continue
+		}
+		refs = append(refs, h.text)
+		used += h.lines
+	}
+	if len(refs) == 0 {
+		return
+	}
+	block := "HELPERS IN THIS FILE:\n" + strings.Join(refs, "\n")
+	if u.Context != "" {
+		u.Context += "\n\n" + block
+	} else {
+		u.Context = block
+	}
+}
+
+func numberedLines(text string, start int) string {
+	ls := strings.Split(text, "\n")
+	out := make([]string, 0, len(ls))
+	for i, l := range ls {
+		if strings.TrimSpace(l) == "" {
+			continue
+		}
+		out = append(out, fmt.Sprintf("%d\t%s", start+i, l))
+	}
+	return strings.Join(out, "\n")
+}
+
+func callsHelper(body, name string) bool {
+	for idx := 0; idx < len(body); {
+		j := strings.Index(body[idx:], name)
+		if j < 0 {
+			return false
+		}
+		pos := idx + j
+		end := pos + len(name)
+		prevOK := pos == 0 || (!isIdentByte(body[pos-1]) && body[pos-1] != '.')
+		nextOK := end < len(body) && body[end] == '('
+		if prevOK && nextOK {
+			return true
+		}
+		idx = pos + 1
+	}
+	return false
+}
+
+func isIdentByte(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_' || b == '$'
 }
 
 func splitMarkdown(path string, src []byte) []Unit {

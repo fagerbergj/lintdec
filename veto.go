@@ -6,7 +6,7 @@ const vetoConfidence = 0.5
 
 var ruleVetoes = map[string]string{
 	"flakey-test":               "Would this test pass reliably even on a slow, heavily loaded machine: every sleep only simulates a delay or bounds a failure path, every deadline is generous, and no assertion depends on goroutine order or wall-clock speed?",
-	"incomplete-assertion":      "Does the test assert the specific behavior its name or doc comment promises, even if it leaves other fields or return values unchecked?",
+	"incomplete-assertion":      "Does the test assert every behavior its name or doc comment promises, even if it leaves incidental fields or return values unchecked?",
 	"swallowed-error":           "Is ignoring or replacing this error deliberate and harmless: best-effort work, a value that cannot realistically fail, idiomatic cleanup, or a fallback the code or a comment documents?",
 	"comment-contradicts-code":  "Is every claim in the comment that can be checked against the visible code consistent with that code?",
 	"stub-body":                 "Is the minimal body intentional: a no-op or placeholder its name or comment describes, a generated or dependency-injection stub, or an implementation whose contract is to do nothing?",

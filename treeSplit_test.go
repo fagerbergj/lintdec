@@ -180,11 +180,103 @@ func TestSplitGoCommentSeesWholeDeclaration(t *testing.T) {
 			loose = &u
 		}
 	}
-	if doc == nil || !strings.Contains(doc.Context, "return digest(x)") || !strings.Contains(doc.Context, "package p") {
-		t.Fatalf("doc comment context must cover its function and nearby lines: %+v", doc)
+	if doc == nil || !strings.Contains(doc.Context, "return digest(x)") || strings.Contains(doc.Context, "package p") {
+		t.Fatalf("doc comment context must cover only its declaration, not unrelated neighbors: %+v", doc)
 	}
 	if loose == nil || !strings.Contains(loose.Context, "return digest(x)") || strings.Contains(loose.Context, "func build") {
 		t.Fatalf("top-level comment should keep the nearby-lines window: %+v", loose)
+	}
+}
+
+func TestAttachTestHelpersIncludesCalledHelpersOnly(t *testing.T) {
+	tsSrc := `async function within(ms: number, done: () => boolean) {
+  for (let t = 0; t < ms && !done(); t += 500) await clock.advance(500);
+  return done();
+}
+function unusedHelper() { return 1; }
+test('waits using fake clock', async () => {
+  assert.ok(await within(5000, () => true));
+});
+test('does not call helpers', () => {
+  obj.within(10);
+});
+`
+	units := splitFile("cap.test.ts", []byte(tsSrc))
+	var tests []Unit
+	for _, u := range units {
+		if u.Kind == "TestFunction" {
+			tests = append(tests, u)
+		}
+	}
+	if len(tests) != 2 {
+		t.Fatalf("want 2 TestFunction units, got %d", len(tests))
+	}
+	if !strings.Contains(tests[0].Context, "clock.advance(500)") || strings.Contains(tests[0].Context, "unusedHelper") {
+		t.Errorf("first test should see called helper within only:\n%s", tests[0].Context)
+	}
+	if strings.Contains(tests[1].Context, "clock.advance(500)") {
+		t.Errorf("method call obj.within should not attach top-level helper:\n%s", tests[1].Context)
+	}
+
+	// Go test file: top-level helper attached, receiver method skipped.
+	goSrc := `package p
+type clock struct{}
+func (c *clock) advance() {}
+func fakeWait() { println("fake") }
+func TestRun(t *testing.T) { fakeWait() }
+`
+	for _, u := range splitFile("run_test.go", []byte(goSrc)) {
+		if u.Kind == "TestFunction" {
+			if !strings.Contains(u.Context, "4\tfunc fakeWait()") || strings.Contains(u.Context, "advance") {
+				t.Errorf("Go test helper context wrong:\n%s", u.Context)
+			}
+		}
+	}
+
+	// Class methods are excluded from the top-level helper pool.
+	clsSrc := `class Draft { render() { return 'class-method'; } }
+function render() { return 'top-level'; }
+test('renders', () => { expect(render()).toBe('top-level'); });
+`
+	for _, u := range splitFile("cls.test.ts", []byte(clsSrc)) {
+		if u.Kind == "TestFunction" {
+			if !strings.Contains(u.Context, "top-level") || strings.Contains(u.Context, "class-method") {
+				t.Errorf("class method should not attach as top-level helper:\n%s", u.Context)
+			}
+		}
+	}
+
+	// Budget caps: >30-line helper skipped; total helper context capped at 50 lines.
+	body := strings.Repeat("  const x = 1;\n", 26)
+	capSrc := "function hOne() {\n" + body + "}\nfunction hTwo() {\n" + body + "}\nfunction huge() {\n" + strings.Repeat("  const y = 2;\n", 31) + "}\ntest('caps', () => { hOne(); hTwo(); huge(); });\n"
+	for _, u := range splitFile("caps.test.ts", []byte(capSrc)) {
+		if u.Kind == "TestFunction" {
+			if !strings.Contains(u.Context, "function hOne") || strings.Contains(u.Context, "function hTwo") || strings.Contains(u.Context, "function huge") {
+				t.Errorf("helper caps not enforced:\n%s", u.Context)
+			}
+		}
+	}
+}
+
+func TestTrailingCommentsKeepNearbyContext(t *testing.T) {
+	tsSrc := `const ROUTES = [
+  ['GET', '/a'],
+]; // one entry per route
+export function demo() { return 1; }
+`
+	for _, u := range splitTree("routes.ts", []byte(tsSrc), tsLangs["ts"]) {
+		if u.Kind == "Comment" {
+			if !strings.Contains(u.Context, "const ROUTES") {
+				t.Errorf("trailing TS comment lost the declaration it trails:\n%s", u.Context)
+			}
+		}
+	}
+
+	goSrc := "package p\nconst x = 1\nfunc f() {} // short trailing note\n"
+	for _, u := range splitGo("trail.go", []byte(goSrc)) {
+		if u.Kind == "Comment" && !strings.Contains(u.Context, "const x = 1") {
+			t.Errorf("single-line Go trailing comment lost nearby context:\n%s", u.Context)
+		}
 	}
 }
 
@@ -293,16 +385,19 @@ func TestTreeCommentContextInsideFunction(t *testing.T) {
 
 func TestTreeCommentContextCoversFollowingFunction(t *testing.T) {
 	var b strings.Builder
-	b.WriteString("// mentions lineSixteenToken\nexport function demo() {\n")
+	b.WriteString("const unrelatedBefore = 1;\n\n// mentions lineSixteenToken\nexport function demo() {\n")
 	for range 12 {
 		b.WriteString("  const x = 1;\n")
 	}
-	b.WriteString("  return 'lineSixteenToken';\n}\n")
+	b.WriteString("  return 'lineSixteenToken';\n}\n\nconst unrelatedAfter = 2;\n")
 	units := splitTree("demo.ts", []byte(b.String()), tsLangs["ts"])
 	for _, u := range units {
 		if u.Kind == "Comment" {
 			if !strings.Contains(u.Context, "lineSixteenToken") {
 				t.Errorf("doc comment context truncated before end of function:\n%s", u.Context)
+			}
+			if strings.Contains(u.Context, "unrelatedBefore") || strings.Contains(u.Context, "unrelatedAfter") {
+				t.Errorf("doc comment context should not include unrelated neighbors:\n%s", u.Context)
 			}
 			return
 		}

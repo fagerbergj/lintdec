@@ -125,7 +125,7 @@ func splitTree(path string, src []byte, cfg tsCfg) []Unit {
 	funcUnit := func(n *sitter.Node, kind string) Unit {
 		u := Unit{Kind: kind, File: path,
 			Start: int(n.StartPoint().Row) + 1, End: int(n.EndPoint().Row) + 1,
-			Text: n.Content(src)}
+			Text: n.Content(src), name: unitDeclName(n, src)}
 		if d, ok := docs[n.PrevSibling()]; ok {
 			u.Context, u.ContextStart = d.text, d.start
 		} else if d := pythonDocstring(n, src); d != "" {
@@ -263,23 +263,24 @@ func collectComments(root *sitter.Node, path string, cfg tsCfg, src []byte, line
 			j++
 		}
 		s, e := int(first.StartPoint().Row)+1, int(last.EndPoint().Row)+1
+		fullLine := isCommentOnlyLine(lines, int(first.StartPoint().Row), int(first.StartPoint().Column))
 		out = append(out, Unit{
 			Kind: "Comment", File: path, Start: s, End: e,
 			Text:    strings.Join(parts, "\n"),
-			Context: treeCommentContext(lines, last, s, e, cfg, src),
+			Context: treeCommentContext(lines, last, s, e, cfg, src, fullLine),
 		})
 		i = j
 	}
 	return out
 }
 
-// treeCommentContext mirrors goCommentContext: a comment above or inside a
-// bounded declaration sees the whole declaration in addition to +-8 nearby lines.
-func treeCommentContext(lines []string, last *sitter.Node, s, e int, cfg tsCfg, src []byte) string {
+// treeCommentContext mirrors goCommentContext: a full-line comment directly above
+// or any comment inside a bounded declaration sees that declaration alone.
+func treeCommentContext(lines []string, last *sitter.Node, s, e int, cfg tsCfg, src []byte, fullLine bool) string {
 	nxt := last.NextSibling()
-	if nxt != nil && isUnitStart(nxt, cfg, src) && int(nxt.StartPoint().Row)+1 <= e+1 {
+	if nxt != nil && fullLine && isUnitStart(nxt, cfg, src) && int(nxt.StartPoint().Row)+1 == e+1 {
 		if de := min(int(nxt.EndPoint().Row)+1, len(lines)); de-s <= rawBudgetLines {
-			return numberedContext(lines, s-8, max(de, e+8), s, e)
+			return numberedContext(lines, e+1, de, s, e)
 		}
 	}
 	for p := last.Parent(); p != nil; p = p.Parent() {
@@ -288,13 +289,15 @@ func treeCommentContext(lines []string, last *sitter.Node, s, e int, cfg tsCfg, 
 		}
 		ds, de := int(p.StartPoint().Row)+1, min(int(p.EndPoint().Row)+1, len(lines))
 		if de-ds <= rawBudgetLines {
-			return numberedContext(lines, min(ds, s-8), max(de, e+8), s, e)
+			if ctx := numberedContext(lines, ds, de, s, e); ctx != "" {
+				return ctx
+			}
 		}
 		break
 	}
-	if nxt != nil && int(nxt.StartPoint().Row)+1 <= e+1 {
+	if nxt != nil && fullLine && int(nxt.StartPoint().Row)+1 == e+1 {
 		if de := min(int(nxt.EndPoint().Row)+1, len(lines)); de-s <= rawBudgetLines {
-			return numberedContext(lines, s-8, max(de, e+8), s, e)
+			return numberedContext(lines, e+1, de, s, e)
 		}
 	}
 	return commentContext(lines, s, e)
@@ -404,6 +407,37 @@ func isFnExpr(n *sitter.Node) bool {
 		}
 	}
 	return false
+}
+
+// unitDeclName returns the declared name of a top-level function/variable unit,
+// or "" for methods/constructors that are only reachable through a receiver.
+func unitDeclName(n *sitter.Node, src []byte) string {
+	if n.Type() == "export_statement" {
+		if inner := innerDecl(n); inner != nil {
+			n = inner
+		}
+	}
+	switch n.Type() {
+	case "method_definition", "method_declaration", "constructor_declaration":
+		return ""
+	case "lexical_declaration":
+		for i, count := 0, int(n.NamedChildCount()); i < count; i++ {
+			c := n.NamedChild(i)
+			if c.Type() == "variable_declarator" && isFnExpr(c.ChildByFieldName("value")) {
+				if id := c.ChildByFieldName("name"); id != nil {
+					return id.Content(src)
+				}
+			}
+		}
+		return ""
+	}
+	if id := n.ChildByFieldName("name"); id != nil {
+		return id.Content(src)
+	}
+	if decl := n.ChildByFieldName("declarator"); decl != nil {
+		return funcName(decl, src)
+	}
+	return funcName(n, src)
 }
 
 // funcName returns the declared identifier of a function-like node.
