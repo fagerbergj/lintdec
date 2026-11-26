@@ -66,3 +66,11 @@ func TestDefaultOffRulesNeedAnExplicitRequest(t *testing.T) {
 		t.Fatalf("an unknown lintdec.yaml rule must be ignored, not fail the run: %v", err)
 	}
 }
+
+func TestEveryRuleHasSource(t *testing.T) {
+	for _, r := range rules {
+		if r.Source == "" {
+			t.Errorf("rule %s is missing a primary Source citation", r.ID)
+		}
+	}
+}
