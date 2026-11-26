@@ -18,10 +18,11 @@ var (
 	rfcHeadingRe      = regexp.MustCompile(`(?im)^#{1,3}\s+(?:proposal|motivation|proposed change|detailed design|design)\b`)
 	testSkipRe        = regexp.MustCompile(`(?i)(?:^|[^-\w])(?:t\.Skip\w*|test\.skip|it\.skip|describe\.skip|xit|xtest|@Disabled|@Ignore|@pytest\.mark\.skip|unittest\.skip)(?:[^-\w]|$)`)
 	testMockRe        = regexp.MustCompile(`(?i)\b(?:vi\.fn|vi\.mock|vi\.spyOn|jest\.fn|jest\.mock|jest\.spyOn|MagicMock|create_autospec|sinon\.|gomock|mockk|Mockito|unittest\.mock)\b|\bpatch\s*\(`)
-	testSharedStateRe = regexp.MustCompile(`(?i)(?:/tmp/|os\.Setenv|process\.env\.|os\.environ|localhost:\d|127\.0\.0\.1:\d|WriteFile|writeFileSync|os\.Chdir|os\.chdir|process\.chdir)`)
-	remediationHeadRe = regexp.MustCompile(`(?i)^#{1,4}\s+.*(?:troubleshoot|error|warning|failure|debug|known issues|faq|caveat)`)
+	testSharedStateRe = regexp.MustCompile(`(?i)(?:os\.(?:Set|Unset)env|process\.env\.\w+\s*=\s*[^=\s]|process\.env\[[^\]]+\]\s*=\s*[^=\s]|delete\s+process\.env|os\.environ\[|monkeypatch\.setenv|os\.Chdir|process\.chdir|(?:/tmp/|localhost:\d|127\.0\.0\.1:\d))`)
+	remediationHeadRe = regexp.MustCompile(`(?i)^#{1,6}\s+.*(?:troubleshoot|error|warning|failure|debug|known issues|faq|caveat)`)
 )
 
+// ruleFilters maps rule IDs to deterministic pre-filters; suppression-no-reason filters by construction via Directive kind.
 var ruleFilters = map[string]func(Unit) bool{
 	"todo-no-owner":             func(u Unit) bool { return todoTagRe.MatchString(u.Text) },
 	"comment-long":              func(u Unit) bool { return u.End-u.Start+1 >= 3 || len(strings.Fields(u.Text)) >= 50 },

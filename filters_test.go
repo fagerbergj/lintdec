@@ -61,9 +61,17 @@ func TestRuleEligibleDeterministicFilters(t *testing.T) {
 		{"test-over-mocked", Unit{Kind: "TestFunction", Text: "it('x', () => { expect(1+1).toBe(2); })"}, false},
 
 		{"test-shared-state", Unit{Kind: "TestFunction", Text: "os.WriteFile(\"/tmp/a\", b, 0644)"}, true},
+		{"test-shared-state", Unit{Kind: "TestFunction", Text: "process.env.API_KEY = 'x'"}, true},
+		{"test-shared-state", Unit{Kind: "TestFunction", Text: "process.env[\"FEATURE_X\"] = \"1\""}, true},
+		{"test-shared-state", Unit{Kind: "TestFunction", Text: "delete process.env.API_KEY"}, true},
+		{"test-shared-state", Unit{Kind: "TestFunction", Text: "monkeypatch.setenv('A', '1')"}, true},
+		{"test-shared-state", Unit{Kind: "TestFunction", Text: "const key = process.env.API_KEY"}, false},
+		{"test-shared-state", Unit{Kind: "TestFunction", Text: "if (process.env.CI === 'true') return;"}, false},
+		{"test-shared-state", Unit{Kind: "TestFunction", Text: "os.WriteFile(filepath.Join(t.TempDir(), \"a\"), b, 0644)"}, false},
 		{"test-shared-state", Unit{Kind: "TestFunction", Text: "if got := add(1, 2); got != 3 { t.Fatal(got) }"}, false},
 
 		{"md-no-remediation", Unit{Kind: "Section", Text: "## Error 503 on startup\n\nLogs error."}, true},
+		{"md-no-remediation", Unit{Kind: "Section", Text: "##### Known issues\n\nFails on arm64."}, true},
 		{"md-no-remediation", Unit{Kind: "Section", Text: "## Installation\n\nRun npm ci."}, false},
 	}
 	for _, c := range cases {

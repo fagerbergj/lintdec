@@ -565,10 +565,10 @@ func digestFor(u Unit, lines []string) string {
 }
 
 var (
-	commentMarker        = regexp.MustCompile(`^\s*(//+|#+|/\*+|\*+/?|--|;+)\s?`)
+	commentMarker        = regexp.MustCompile(`^\s*(//+|#+|/\*+|\*+/?|--|;+|<!--|\{\s*/\*+)\s?`)
 	ruleLine             = regexp.MustCompile(`^[^\p{L}\p{N}]{3,}$`)
-	toolDirective        = regexp.MustCompile(`^(shellcheck|eslint|prettier-ignore|@ts-|nolint|noqa|go:|lint:|lintdec:ignore|pylint|type: ?ignore|istanbul|c8 |biome-ignore|ktlint|tslint|jshint|NOSONAR|region|endregion)`)
-	suppressionDirective = regexp.MustCompile(`(?i)^(?:eslint-disable|@ts-ignore|@ts-expect-error|nolint|noqa|type:\s*ignore|biome-ignore|pylint:\s*disable|rubocop:disable|ktlint-disable|NOSONAR|istanbul ignore|c8 ignore|shellcheck disable)`)
+	toolDirective        = regexp.MustCompile(`(?i)^(?:shellcheck|eslint|prettier-ignore|@ts-|nolint|noqa|ruff:\s*noqa|flake8:\s*noqa|pragma\s+warning\s+disable|markdownlint-disable|rubocop|go:|lint:|lintdec:ignore|pylint|type:\s*ignore|istanbul|c8 |biome-ignore|ktlint|tslint|jshint|NOSONAR|region|endregion)`)
+	suppressionDirective = regexp.MustCompile(`(?i)^(?:eslint-disable|@ts-ignore|@ts-expect-error|nolint|noqa|ruff:\s*noqa|flake8:\s*noqa|pragma\s+warning\s+disable|markdownlint-disable|type:\s*ignore|biome-ignore|pylint:\s*disable|rubocop:disable|ktlint-disable|NOSONAR|istanbul ignore|c8 ignore|shellcheck disable)`)
 )
 
 func isSuppressionComment(u Unit) bool {
@@ -584,17 +584,16 @@ func isSuppressionComment(u Unit) bool {
 	return false
 }
 
-// filterComments drops structural banners and non-suppression directives while
-// re-kinding linter/type suppressions as Directive units for suppression-no-reason.
+// filterComments filters units in place: pure suppression directives become Directive units,
+// other structural banners/directives are dropped, and prose (including mixed prose+directive blocks) stays Comment.
 func filterComments(units []Unit) []Unit {
 	out := units[:0]
 	for _, u := range units {
-		if isSuppressionComment(u) {
-			u.Kind = "Directive"
-			out = append(out, u)
-			continue
-		}
 		if structuralComment(u) {
+			if isSuppressionComment(u) {
+				u.Kind = "Directive"
+				out = append(out, u)
+			}
 			continue
 		}
 		out = append(out, u)

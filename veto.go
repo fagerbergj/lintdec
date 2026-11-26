@@ -42,7 +42,7 @@ var ruleVetoes = map[string]string{
 	"test-over-mocked":          "Do the mocks or fakes in TARGET only replace external boundaries (such as network, filesystem, clock, or third-party services) while exercising real production logic and asserting real outcomes?",
 	"test-shared-state":         "Does the test in TARGET isolate every file, port, or environment change (using a temp directory helper, ephemeral port, or explicit restore/cleanup) so it cannot leak into sibling tests?",
 	"suppression-no-reason":     "Does the suppression comment in TARGET (or an immediately adjacent comment in CONTEXT) state a concrete technical reason why the disabled check does not apply or why the bypass is safe?",
-	"md-no-remediation":         "Does the section in TARGET either give concrete steps to fix or work around the failure, link directly to remediation steps, or explicitly explain that no user action is required?",
+	"md-no-remediation":         "Does the section in TARGET either give concrete steps to fix or work around the failure, include a fenced code block placeholder (such as [sh code block] or [code block]) introduced by prose naming an action or fix the reader applies, link directly to remediation steps, or explicitly explain that no user action is required?",
 }
 
 // ruleFloors: tuned per rule on labeled findings, with 30% of files held out; unlisted rules need 0.75.

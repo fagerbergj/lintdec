@@ -70,7 +70,7 @@ var rules = []Rule{
 		"Google SWE Book, Ch. 11 Testing Overview: \"Tests should assume as little as possible about the outside environment\" https://abseil.io/resources/swe-book/html/ch11.html"},
 	{"suppression-no-reason", "linter or type suppression without rationale", []string{"Directive"}, "whole",
 		"The linter, compiler, or type-checker suppression disables a check without stating a concrete technical reason why the suppressed code is safe or intentional.",
-		"Sola-ST Suppression Study (arXiv:2301.08022): unjustified suppressions account for significant technical debt rather than genuine false positives https://arxiv.org/abs/2301.08022"},
+		"eslint-comments/require-description & Hu et al., FSE 2025 (DOI 10.1145/3715729): unexplained suppressions accumulate obsolete bypasses and mask real defects https://eslint-community.github.io/eslint-plugin-eslint-comments/rules/require-description.html"},
 	{"comment-long", "comment longer than it earns", []string{"Comment"}, "whole",
 		"The comment runs into a multi-paragraph essay, or turns a short note into a long passage, where a decision record, a doc link, or nothing would do.",
 		"Google C++ Style Guide, Function Comments: \"However, do not be unnecessarily verbose or state the completely obvious.\" https://google.github.io/styleguide/cppguide.html#Function_Comments"},
