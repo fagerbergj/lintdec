@@ -69,7 +69,7 @@ var rules = []Rule{
 		"The comment runs into a multi-paragraph essay, or turns a short note into a long passage, where a decision record, a doc link, or nothing would do.",
 		"Google C++ Style Guide, Function Comments: \"However, do not be unnecessarily verbose or state the completely obvious.\" https://google.github.io/styleguide/cppguide.html#Function_Comments"},
 	{"comment-tautology", "comment restates the code", []string{"Comment"}, "whole",
-		"The comment merely repeats what the adjacent declaration's name or code already states directly, adding no reason, constraint, or non-obvious behavior.",
+		"The comment merely repeats what the adjacent declaration's name or code already states directly, adding no reason, constraint, or non-obvious behavior. If any clause states a mechanism, constraint, or behavior the name and code do not state directly, it is not tautological.",
 		"Google Testing Blog, To Comment or Not to Comment? (2017): \"avoid comments that just repeat what the code does. These are just noise\" https://testing.googleblog.com/2017/07/code-health-to-comment-or-not-to-comment.html"},
 	{"comment-excuse", "apology or deferral for a code smell", []string{"Comment"}, "whole",
 		"The comment apologizes for or defends the code, or defers a known problem, without naming an owner, a ticket, or a concrete plan.",

@@ -291,7 +291,7 @@ func candidateUnits(u Unit, header, heading string) []Unit {
 		s := sent.text
 		toks := tagSentence(s)
 		own, inS := withoutQuotes(s)
-		at := Unit{File: u.File, Start: u.Start + sent.lines[0], End: u.Start + sent.lines[len(sent.lines)-1], Context: ctx}
+		at := Unit{File: u.File, Context: ctx}
 		out = append(out, markSpans("WordyPhrase", wordyPhrase, own, at, func(off int) int { return u.Start + sent.lineAt(inS(off)) })...)
 		for i := range toks {
 			var kind string
