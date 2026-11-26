@@ -16,31 +16,27 @@ type Rule struct {
 	Rubric  string
 }
 
-// promptVersion folds the system prompt and every rubric into one hash; the
-// cache key carries it, so any prompt or rubric edit invalidates stale
-// verdicts automatically.
-var promptVersion = func() string {
+// ruleVersion folds the system prompt and one rule's rubric into a hash so
+// editing a single rubric invalidates only that rule's cached verdicts.
+func ruleVersion(r Rule) string {
 	h := sha256.New()
-	h.Write([]byte(systemPrompt))
-	for _, r := range rules {
-		h.Write([]byte(r.ID + "\x00" + r.Rubric + "\x00" + r.Scope))
-	}
+	h.Write([]byte(systemPrompt + "\x00" + r.ID + "\x00" + r.Summary + "\x00" + r.Rubric + "\x00" + r.Scope))
 	return hex.EncodeToString(h.Sum(nil))
-}()
+}
 
 var rules = []Rule{
 	{"flakey-test", "test relies on timing or scheduling", []string{"TestFunction"}, "local",
-		"The test can pass or fail depending on machine speed or scheduling: time.Sleep used to settle state, polling loops against real deadlines, comparisons involving time.Now() or elapsed durations, map or set iteration order assumed stable, or goroutines assumed to have finished."},
+		"The test can pass or fail depending on machine speed or scheduling: time.Sleep used to settle state, polling loops against real deadlines, comparisons involving time.Now() or elapsed durations, map or set iteration order assumed stable, or goroutines assumed to have finished. Deterministic in-process mock servers, awaited async calls, and sequential tests that reset shared test flags in finally blocks are not flaky."},
 	{"tautology-test", "test that cannot fail", []string{"TestFunction"}, "whole",
 		"The test cannot distinguish a correct implementation from a broken one: it only checks that nothing panics, asserts on values it constructed itself, asserts a property that holds regardless of the code under test, or every assertion is true by construction."},
 	{"incomplete-assertion", "important result goes unasserted", []string{"TestFunction"}, "whole",
-		"An important part of the result is not asserted: a (value, error) return where only one is checked, a struct where only some fields are compared after the operation, or an error case asserted without asserting the behavior the test name promises."},
+		"An important part of the result is not asserted: a (value, error) return where only one is checked, a struct where only some fields are compared after the operation, or an error case asserted without asserting the behavior the test name promises. Asserting an exit code or error status for a negative case without also asserting exact message wording, or verifying behavior via recorded mock calls, is not a finding."},
 	{"wrong-assertion", "assertion contradicts the contract", []string{"TestFunction"}, "whole",
-		"An assertion expects the opposite of what the code under test or its obvious contract gives: an error expected for valid input, success expected for invalid input, the wrong return value checked, or an expected value that contradicts what the tested code computes from the given inputs."},
+		"An assertion expects the opposite of what the code under test or its obvious contract gives: an error expected for valid input, success expected for invalid input, the wrong return value checked, or an expected value that contradicts what the tested code computes from the given inputs. Flag only when the contradiction is directly evident in the test code itself; do not assume unobserved helpers behave differently from what the test's own assertions show."},
 	{"test-except-pass", "test swallows all failures", []string{"TestFunction"}, "local",
 		"The test cannot fail because failures are swallowed: a deferred recover that never fails the test, a recovery path that only logs, or a checked error overwritten before being reported so a failing branch reports success."},
 	{"assert-self", "assertion compares a value to itself", []string{"TestFunction"}, "local",
-		"An assertion compares two expressions that hold the same value: a variable compared with itself, expected and actual derived from the same expression, or an expected literal clearly copied from the code under test rather than from the specification."},
+		"An assertion compares two expressions that hold the same value: a variable compared with itself, expected and actual derived from the same expression, or an expected literal clearly copied from the code under test rather than from the specification. Comparing the system's output against a test fixture constant or expected input data is normal and not a finding."},
 	{"comment-long", "comment longer than it earns", []string{"Comment"}, "whole",
 		"The comment runs into a multi-paragraph essay, or turns a short note into a long passage, where a decision record, a doc link, or nothing would do."},
 	{"comment-tautology", "comment restates the code", []string{"Comment"}, "whole",
@@ -58,11 +54,11 @@ var rules = []Rule{
 	{"todo-no-owner", "TODO without an owner or ticket", []string{"Comment"}, "whole",
 		"A TODO, FIXME, HACK, or XXX with no owner name, ticket reference, or date, so nobody can tell who acts on it or whether it is still live."},
 	{"md-para-long", "paragraph too long to scan", []string{"Paragraph"}, "local",
-		"A paragraph packs more than one separate topic in a single block, where a reader must reorient between topics, and shorter paragraphs or a list would read at once. Sentences and clauses that develop the same point are one point, no matter how long the paragraph runs: length alone, without distinct topics, is not a violation."},
+		"A paragraph packs more than one separate topic in a single block, where a reader must reorient between topics, and shorter paragraphs or a list would read at once. Sentences and clauses that develop the same point are one point, no matter how long the paragraph runs: length alone, without distinct topics, is not a violation, and a single sentence explaining one concept is not a violation."},
 	{"md-hard-wrap", "prose hard-wrapped mid-sentence", []string{"Paragraph", "Bullet"}, "local",
 		"Flag a paragraph or list item that is hard-wrapped to a fixed width mid-sentence: most of its lines end in the middle of a sentence (the line has no sentence-ending punctuation and the next line continues the same sentence) at roughly the same column. Lines that each hold a complete sentence — even at similar lengths — are normal markdown and must not be flagged; at least two mid-sentence line breaks are required, and a single-line unit cannot be hard-wrapped. Do not flag intentional blank-line paragraphing, single-line items, or wrapped command examples."},
 	{"md-table-dense", "table cell carrying too much text", []string{"Table"}, "local",
-		"Flag table cells that carry long dense text: multi-sentence content, or cells packing several distinct facts a reader must parse inside the cell, where the information would read better as prose, a footnote, or a dedicated section. Judge the file's role from its path and headings: reference and working documents — API and protocol references, RFCs, SRS and audit records, design docs, hardware or network inventories, build notes — legitimately pack structured facts into cells, and their tables are the format, not a defect; do not flag them. The target is reader-facing prose documents (public READMEs, tutorials, changelogs, user guides) where a cell carries an essay the reader must parse inline. Do not flag header rows, short values, or cells whose length comes from many short parallel entries — a list of values, actions or options, each with at most one short qualifier, is the reference form of such tables and is never dense."},
+		"Flag table cells that carry a paragraph or essay of dense prose — packing multiple distinct topics or procedural steps inside one cell where the information would read better as prose, a footnote, or a dedicated section. Judge the file's role from its path and headings: reference and working documents — CLI command references, API and protocol references, RFCs, SRS and audit records, design docs, hardware or network inventories, build notes — legitimately pack structured facts into cells, and their tables are the format, not a defect; do not flag them. The target is reader-facing prose documents (public READMEs, tutorials, changelogs, user guides) where a cell carries an essay the reader must parse inline. Do not flag header rows, short one-or-two-sentence command descriptions, or cells whose length comes from many short parallel entries — a list of values, actions or options, each with at most one short qualifier, is the reference form of such tables and is never dense."},
 	{"md-jargon", "unintroduced terms a reader needs", []string{"Paragraph", "Bullet"}, "local",
 		"Flag only when the paragraph relies on a term its own reader needs to follow its point, and the file neither defines nor introduces it. A term defined, introduced or explained anywhere in the same file — including later sections — is not jargon, even when the using paragraph comes before the definition, and a product or project's own names for its components are not jargon in that project's own documentation. Judge the audience from the file itself (name, headings, links): operational and personal notes, hardware or LLM configuration, patch notes, game or league rules, and internal design documents legitimately use their domain's vocabulary dense, and standard terms of the evident audience (an engineer reading engineering docs, an operator reading setup notes) are never jargon. Do not flag terms defined or referenced within the file, proper nouns used correctly, or a single unfamiliar term the paragraph still lets a competent reader follow. The target is prose aimed at a broader reader that presumes knowledge it never provides, with two or more such unexplained terms in one passage."},
 	{"iface-leaky", "interface leaks its implementation", []string{"Interface"}, "whole",
@@ -70,13 +66,13 @@ var rules = []Rule{
 	{"iface-god-method", "method signature doing too much", []string{"Interface"}, "whole",
 		"A method takes so many parameters, or a bag of mostly-ignored options and callbacks, that most callers pass zero values; the signature should be split or take one options struct."},
 	{"complex-method", "method doing several jobs", []string{"Function", "TestFunction"}, "whole",
-		"The method interleaves clearly distinct concerns, or runs so long and tangled in nested conditions that a human would reach for early returns or a helper per concern to make each part independently readable. Judge the method as a whole."},
+		"The method is genuinely long and hard to follow as one unit because it tangles unrelated jobs together or buries its control flow in deeply nested loops and conditionals that a human would break up with early returns or extracted helpers. Compact functions (even with dense boolean expressions, array pipelines, or a few sequential steps of one job such as validate, fetch, and format), concise test cases exercising one feature's paths sequentially, and factory functions returning an object of small methods over shared closure helpers are not complex. Judge the method as a whole."},
 	{"big-file", "file covering several topics", []string{"File"}, "whole",
 		"Looking at the declaration list, the file groups more than one topic: distinct components or concerns whose names and helpers would read better as separate files. Flag only when the boundary between topics is obvious from the names."},
 	{"name-mismatch", "name promises the opposite of the behavior", []string{"Function"}, "whole",
 		"The name contradicts what the body actually does: a predicate name (is/has/contains) returning a non-boolean, a count returning a collection, a getter with a visible side effect, a parser or normalizer that mutates its input, a validation function that returns data instead of an error. Flag only when the name promises the opposite of the behavior; an imprecise or vague name that is not contradicted is not a finding."},
 	{"swallowed-error", "catch drops an error the caller needs", []string{"Function"}, "whole",
-		"A failure is handled in a way that loses what the caller needs: a recoverable error logged without the context needed to act on it and then dropped, a catch that swallows a real failure and reports success, or a rethrow that discards the original error and its cause. Ignoring an error in an idiomatic cleanup (deferred close, best-effort teardown) or a deliberate documented fallback is not a finding."},
+		"A failure is handled in a way that loses what the caller needs: a recoverable error logged without context and then dropped, a catch that swallows a real failure and reports success or a bogus default, or a catch that rethrows a generic message losing what failed. Ignoring an error in an idiomatic cleanup (deferred close, best-effort teardown), a deliberate documented fallback, or translating a parse or validation failure into a clear domain error thrown to the caller is not a finding."},
 	{"stub-body", "body is a placeholder for promised behavior", []string{"Function"}, "whole",
 		"The body does not do what the name promises: empty, only a comment, throws not-implemented, or returns a zero value while the name promises computed work. Interface implementations whose contract says unimplemented, and scaffolding explicitly marked as a stub, are not findings."},
 	{"commented-code", "commented-out code left in source", []string{"Comment"}, "whole",

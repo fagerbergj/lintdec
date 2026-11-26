@@ -53,7 +53,7 @@ Usage:
 
 Lint flags:
   --rules a,b,c         only these rules (default: all)
-  --include g1,g2       glob include filters (default: *.go,*.md)
+  --include g1,g2       glob include filters (default: all supported languages)
   --exclude g1,g2       glob exclude filters
   --severity low        report findings at this severity or higher: low|med|high
   --out text            output: text|json|jsonl

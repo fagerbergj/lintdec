@@ -57,7 +57,7 @@ func (p *progress) tick(d time.Duration, cached bool, last string) {
 	if cached {
 		p.cached++
 	}
-	if d > 0 {
+	if !cached && d > 0 {
 		p.calls++
 		if p.emaSec == 0 {
 			p.emaSec = d.Seconds()
@@ -105,18 +105,31 @@ func (p *progress) noteSubmit() {
 	p.mu.Unlock()
 }
 
+func (p *progress) callsPerSec() float64 {
+	if p.calls == 0 {
+		return 0
+	}
+	elapsed := time.Since(p.start).Seconds()
+	if elapsed <= 0 {
+		return 0
+	}
+	return float64(p.calls) / elapsed
+}
+
 func (p *progress) rate() string {
-	if p.emaSec <= 0 {
+	r := p.callsPerSec()
+	if r <= 0 {
 		return "—"
 	}
-	return formatRate(1 / p.emaSec)
+	return formatRate(r)
 }
 
 func (p *progress) eta() string {
-	if p.emaSec <= 0 {
+	r := p.callsPerSec()
+	if r <= 0 {
 		return "—"
 	}
-	return formatDuration(float64(p.total-p.done) * p.emaSec)
+	return formatDuration(float64(p.total-p.done) / r)
 }
 
 func (p *progress) barLine() string {

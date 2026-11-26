@@ -94,6 +94,9 @@ func (c *client) call(ctx context.Context, j job) (map[string]Verdict, error) {
 	return out, nil
 }
 
+// callSystemOne evaluates one rule per /v1/systemone call against the same
+// state so long negative clauses in sibling rubrics do not suppress each other's
+// noul probabilities and per-rule cache keys stay independent of --rules.
 func (c *client) callSystemOne(ctx context.Context, j job) (map[string]Verdict, error) {
 	var state strings.Builder
 	fmt.Fprintf(&state, "FILE: %s\nUNIT: %s, lines %d-%d\n", j.unit.File, j.unit.Kind, j.unit.Start, j.unit.End)
@@ -101,22 +104,34 @@ func (c *client) callSystemOne(ctx context.Context, j job) (map[string]Verdict, 
 		fmt.Fprintf(&state, "SURROUNDING CONTEXT (reference only, do not lint it):\n%s\n", j.unit.Context)
 	}
 	fmt.Fprintf(&state, "TARGET:\n%s", j.unit.Text)
+	stateStr := state.String()
 
-	questions := make(map[string]map[string]string, len(j.rules))
+	out := make(map[string]Verdict, len(j.rules))
 	for _, r := range j.rules {
-		questions[r.ID] = map[string]string{
+		v, err := c.callSystemOneRule(ctx, stateStr, r)
+		if err != nil {
+			return nil, err
+		}
+		out[r.ID] = v
+	}
+	return out, nil
+}
+
+func (c *client) callSystemOneRule(ctx context.Context, state string, r Rule) (Verdict, error) {
+	questions := map[string]map[string]string{
+		r.ID: {
 			"type":         "noul",
 			"instructions": fmt.Sprintf("Does the TARGET violate this rule? %s — %s. CRITERIA: %s", r.ID, r.Summary, r.Rubric),
-		}
+		},
 	}
 	payload, _ := json.Marshal(map[string]any{
 		"model":     c.model,
-		"state":     state.String(),
+		"state":     state,
 		"questions": questions,
 	})
 	req, err := http.NewRequestWithContext(ctx, "POST", systemOneRoot(c.base)+"/v1/systemone", bytes.NewReader(payload))
 	if err != nil {
-		return nil, err
+		return Verdict{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if c.apiKey != "" {
@@ -124,16 +139,16 @@ func (c *client) callSystemOne(ctx context.Context, j job) (map[string]Verdict, 
 	}
 	res, err := c.httpc.Do(req)
 	if err != nil {
-		return nil, err
+		return Verdict{}, err
 	}
 	defer res.Body.Close()
 	if res.StatusCode == http.StatusTooManyRequests || res.StatusCode == http.StatusServiceUnavailable {
 		b, _ := io.ReadAll(io.LimitReader(res.Body, 200))
-		return nil, err429{strings.TrimSpace(string(b))}
+		return Verdict{}, err429{strings.TrimSpace(string(b))}
 	}
 	if res.StatusCode >= 400 {
 		b, _ := io.ReadAll(io.LimitReader(res.Body, 400))
-		return nil, fmt.Errorf("HTTP %d: %s", res.StatusCode, strings.TrimSpace(string(b)))
+		return Verdict{}, fmt.Errorf("HTTP %d: %s", res.StatusCode, strings.TrimSpace(string(b)))
 	}
 	var resp struct {
 		Answers map[string]struct {
@@ -141,32 +156,34 @@ func (c *client) callSystemOne(ctx context.Context, j job) (map[string]Verdict, 
 		} `json:"answers"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&resp); err != nil {
-		return nil, err
+		return Verdict{}, err
 	}
-	thresh := c.threshold
-	if thresh <= 0 {
-		thresh = 0.75
+	ans, ok := resp.Answers[r.ID]
+	if !ok {
+		return Verdict{}, fmt.Errorf("systemone response missing answer for %s", r.ID)
 	}
-	out := make(map[string]Verdict, len(j.rules))
-	for _, r := range j.rules {
-		ans, ok := resp.Answers[r.ID]
-		if !ok {
-			return nil, fmt.Errorf("systemone response missing answer for %s", r.ID)
-		}
-		sev := "low"
-		if ans.Noul >= 0.9 {
-			sev = "high"
-		} else if ans.Noul >= thresh {
-			sev = "med"
-		}
-		out[r.ID] = Verdict{
-			Lint:       ans.Noul >= thresh,
-			Severity:   sev,
-			Confidence: ans.Noul,
-			Reason:     r.Summary,
-		}
+	return applySystemOneThreshold(Verdict{
+		Confidence: ans.Noul,
+		Reason:     r.Summary,
+	}, c.threshold), nil
+}
+
+// applySystemOneThreshold derives Lint and Severity from a cached or fresh noul
+// probability so --threshold sweeps reuse the cache without re-running the model.
+func applySystemOneThreshold(v Verdict, threshold float64) Verdict {
+	if threshold <= 0 {
+		threshold = 0.75
 	}
-	return out, nil
+	v.Lint = v.Confidence >= threshold
+	switch {
+	case !v.Lint:
+		v.Severity = "low"
+	case v.Confidence >= 0.9:
+		v.Severity = "high"
+	default:
+		v.Severity = "med"
+	}
+	return v
 }
 
 func (c *client) callOnce(ctx context.Context, j job, followUp string) (map[string]Verdict, []string, error) {
@@ -188,7 +205,7 @@ func (c *client) callOnce(ctx context.Context, j job, followUp string) (map[stri
 		sb.WriteString(followUp)
 	}
 	payload, _ := json.Marshal(map[string]any{
-		"model": c.model, "temperature": c.temp, "max_tokens": 600,
+		"model": c.model, "temperature": c.temp, "max_tokens": 4096,
 		"chat_template_kwargs": map[string]any{"enable_thinking": false},
 		"messages": []map[string]string{
 			{"role": "system", "content": systemPrompt},
@@ -231,7 +248,7 @@ func (c *client) callOnce(ctx context.Context, j job, followUp string) (map[stri
 		return nil, nil, errors.New("empty completion")
 	}
 	raw := ""
-	if out.Choices[0].Message.Content != nil {
+	if out.Choices[0].Message.Content != nil && strings.TrimSpace(*out.Choices[0].Message.Content) != "" {
 		raw = *out.Choices[0].Message.Content
 	} else if out.Choices[0].Message.Reasoning != nil {
 		raw = *out.Choices[0].Message.Reasoning
@@ -239,15 +256,62 @@ func (c *client) callOnce(ctx context.Context, j job, followUp string) (map[stri
 	return parseVerdicts(raw, j)
 }
 
+// extractJSONObject finds the last balanced {...} JSON object in raw so prose or
+// reasoning text mentioning braces earlier in the reply does not break parsing.
+func extractJSONObject(raw string) (string, bool) {
+	end := strings.LastIndex(raw, "}")
+	if end < 0 {
+		return "", false
+	}
+	inStr, esc, depth := false, false, 0
+	lastOpen := -1
+	for i := 0; i <= end; i++ {
+		ch := raw[i]
+		if esc {
+			esc = false
+			continue
+		}
+		if inStr {
+			if ch == '\\' {
+				esc = true
+			} else if ch == '"' {
+				inStr = false
+			}
+			continue
+		}
+		switch ch {
+		case '"':
+			inStr = true
+		case '{':
+			if depth == 0 {
+				lastOpen = i
+			}
+			depth++
+		case '}':
+			if depth > 0 {
+				depth--
+				if depth == 0 && i == end && lastOpen >= 0 {
+					return raw[lastOpen : end+1], true
+				}
+			}
+		}
+	}
+	s := strings.Index(raw, "{")
+	if s < 0 || end <= s {
+		return "", false
+	}
+	return raw[s : end+1], true
+}
+
 // parseVerdicts extracts the rule-id → verdict map. It returns the verdicts
 // parsed so far plus the ids the model omitted; malformed JSON is an error.
 func parseVerdicts(raw string, j job) (map[string]Verdict, []string, error) {
-	s, e := strings.Index(raw, "{"), strings.LastIndex(raw, "}")
-	if s < 0 || e <= s {
+	blob, ok := extractJSONObject(raw)
+	if !ok {
 		return nil, nil, fmt.Errorf("no JSON in model reply: %.80q", raw)
 	}
 	var m map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(raw[s:e+1]), &m); err != nil {
+	if err := json.Unmarshal([]byte(blob), &m); err != nil {
 		return nil, nil, fmt.Errorf("bad model JSON: %w", err)
 	}
 	out := make(map[string]Verdict, len(j.rules))
@@ -297,13 +361,13 @@ func newCache(on bool) *cache {
 	return &cache{dir: filepath.Join(dir, "lintdec", "cache"), on: on}
 }
 
-func (c *cache) key(model, tempStr, ruleID string, u Unit) string {
+func (c *cache) key(model, tempStr string, r Rule, u Unit) string {
 	h := sha256.New()
 	abs, _ := filepath.Abs(u.File)
-	// promptVersion folds the system prompt and rubrics into the key, so a
-	// prompt or rubric edit invalidates stale verdicts automatically; the
-	// absolute path makes the cache stable across working directories.
-	fmt.Fprintf(h, "%s|%s|%s|%s|%s|%s\n%s\n%s", model, tempStr, ruleID, u.Kind, promptVersion, abs, u.Text, u.Context)
+	// ruleVersion folds the system prompt and this rule's rubric into the key, so
+	// editing one rubric invalidates only that rule's verdicts; the absolute path
+	// makes the cache stable across working directories.
+	fmt.Fprintf(h, "%s|%s|%s|%s|%s|%s\n%s\n%s", model, tempStr, r.ID, u.Kind, ruleVersion(r), abs, u.Text, u.Context)
 	return hex.EncodeToString(h.Sum(nil))
 }
 

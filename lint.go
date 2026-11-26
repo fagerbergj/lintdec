@@ -60,7 +60,7 @@ func reorderArgs(args []string) []string {
 	return append(flags, pos...)
 }
 
-var skipDirs = map[string]bool{".git": true, "vendor": true, "node_modules": true, ".lintdec": true}
+var skipDirs = map[string]bool{".git": true, "vendor": true, "node_modules": true, ".lintdec": true, "dist": true}
 
 // isWorktree: a git worktree's .git is a file (a gitdir pointer), a
 // checkout's is a directory. Linting a worktree duplicates every finding
@@ -404,12 +404,17 @@ func runPool(ctx context.Context, jobs []job, o lintOpts, cl *client, ch *cache,
 		start := time.Now()
 		tempStr := fmt.Sprintf("%v", cl.temp)
 		if cl.protocol == "systemone" {
-			tempStr = fmt.Sprintf("systemone:%.3f", cl.threshold)
+			tempStr = "systemone-1q"
 		}
 		verdicts := make(map[string]Verdict, len(j.rules))
+		ruleByID := make(map[string]Rule, len(j.rules))
 		var todo []Rule
 		for _, r := range j.rules {
-			if v, ok := ch.get(ch.key(cl.model, tempStr, r.ID, j.unit)); ok {
+			ruleByID[r.ID] = r
+			if v, ok := ch.get(ch.key(cl.model, tempStr, r, j.unit)); ok {
+				if cl.protocol == "systemone" {
+					v = applySystemOneThreshold(v, cl.threshold)
+				}
 				verdicts[r.ID] = v
 				continue
 			}
@@ -440,7 +445,7 @@ func runPool(ctx context.Context, jobs []job, o lintOpts, cl *client, ch *cache,
 				return
 			}
 			for id, vv := range v {
-				ch.put(ch.key(cl.model, tempStr, id, j.unit), vv)
+				ch.put(ch.key(cl.model, tempStr, ruleByID[id], j.unit), vv)
 				verdicts[id] = vv
 			}
 		}

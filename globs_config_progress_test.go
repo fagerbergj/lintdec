@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestMatchGlobBraces(t *testing.T) {
@@ -182,5 +183,14 @@ func TestProgressSeverityTotals(t *testing.T) {
 	// quiet mode counts checks but never fires milestone lines
 	if p.done != 12 || p.milestone != 0 {
 		t.Errorf("done=%d milestone=%d, want 12/0", p.done, p.milestone)
+	}
+
+	p2 := newProgress(100, true)
+	p2.start = time.Now().Add(-10 * time.Second)
+	for range 20 {
+		p2.tick(3*time.Second, false, "ok") // simulates 6 parallel workers (20 done in 10s = 120/min)
+	}
+	if r := p2.callsPerSec(); r < 1.5 || r > 2.5 {
+		t.Errorf("callsPerSec = %.2f, want ~2.0 (wall-clock aggregate, not single-worker 1/3s)", r)
 	}
 }
