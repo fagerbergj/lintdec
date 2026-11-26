@@ -17,17 +17,35 @@ type Rule struct {
 	Source  string // catalogue id, source, quote, URL: the published rule this one enforces
 }
 
-// promptVersion folds the system prompt and every rubric into one hash; the
-// cache key carries it, so any prompt or rubric edit invalidates stale
-// verdicts automatically.
-var promptVersion = func() string {
-	h := sha256.New()
-	h.Write([]byte(systemPrompt))
+// allRulesVersion hashes the full catalogue for batched chat prompts;
+// ruleVersions hashes one rule + its veto for single-rule systemone calls.
+var (
+	allRulesVersion string
+	ruleVersions    map[string]string
+)
+
+func init() {
+	all := sha256.New()
+	all.Write([]byte(systemPrompt))
+	ruleVersions = make(map[string]string, len(rules))
 	for _, r := range rules {
-		h.Write([]byte(r.ID + "\x00" + r.Rubric + "\x00" + r.Scope + "\x00" + ruleVetoes[r.ID]))
+		entry := r.ID + "\x00" + r.Summary + "\x00" + r.Rubric + "\x00" + r.Scope + "\x00" + ruleVetoes[r.ID]
+		all.Write([]byte(entry))
+		one := sha256.New()
+		one.Write([]byte(systemPrompt + "\x00" + entry))
+		ruleVersions[r.ID] = hex.EncodeToString(one.Sum(nil))
 	}
+	allRulesVersion = hex.EncodeToString(all.Sum(nil))
+}
+
+func ruleVersion(id string) string {
+	if v, ok := ruleVersions[id]; ok {
+		return v
+	}
+	h := sha256.New()
+	h.Write([]byte(systemPrompt + "\x00" + id))
 	return hex.EncodeToString(h.Sum(nil))
-}()
+}
 
 var rules = []Rule{
 	{"flakey-test", "test relies on timing or scheduling", []string{"TestFunction"}, "local",

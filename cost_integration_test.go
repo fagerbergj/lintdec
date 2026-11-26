@@ -133,7 +133,7 @@ func TestCostCacheOnlyAndPartiallyCachedJobs(t *testing.T) {
 	u := Unit{File: "a.go", Kind: "Comment", Start: 1, End: 1, Text: "// TODO"}
 	cl := &client{base: srv.URL, model: "test-model", httpc: srv.Client(), costs: &totals, trustCost: true}
 	ch := &cache{dir: t.TempDir(), on: true}
-	ch.put(ch.key(cl.cacheModel(), "0", r1.ID, u), Verdict{Lint: false})
+	ch.put(ch.key(cl.cacheModel(), "0", r1.ID, cl.cacheRuleVersion(r1.ID), u), Verdict{Lint: false})
 	opts := lintOpts{workers: 1}
 	runPool(context.Background(), []job{{unit: u, rules: []Rule{r1}}}, opts, cl, ch, newProgress(1, true), nil, nil)
 	if s := totals.snapshot(); s.costStatus != "no_calls" || s.cachedJobs != 1 || calls.Load() != 0 {

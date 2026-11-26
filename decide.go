@@ -62,9 +62,16 @@ func (c *client) cacheModel() string {
 
 func (c *client) cacheTemp() string {
 	if c.protocol == "systemone" {
-		return fmt.Sprintf("systemone:%.3f", c.threshold)
+		return "systemone-1q"
 	}
 	return fmt.Sprintf("%v", c.temp)
+}
+
+func (c *client) cacheRuleVersion(ruleID string) string {
+	if c.protocol == "systemone" {
+		return ruleVersion(ruleID)
+	}
+	return allRulesVersion
 }
 
 type Verdict struct {
@@ -135,6 +142,8 @@ func (c *client) call(ctx context.Context, j job) (map[string]Verdict, error) {
 	return out, nil
 }
 
+// callSystemOne sends one rule (+ its veto) per request against the shared state
+// so sibling rubrics cannot suppress each other and cache entries stay independent.
 func (c *client) callSystemOne(ctx context.Context, j job) (map[string]Verdict, error) {
 	var state strings.Builder
 	fmt.Fprintf(&state, "FILE: %s\nUNIT: %s, lines %d-%d\n", j.unit.File, j.unit.Kind, j.unit.Start, j.unit.End)
@@ -142,22 +151,36 @@ func (c *client) callSystemOne(ctx context.Context, j job) (map[string]Verdict, 
 		fmt.Fprintf(&state, "SURROUNDING CONTEXT (reference only, do not lint it):\n%s\n", j.unit.Context)
 	}
 	fmt.Fprintf(&state, "TARGET:\n%s", j.unit.Text)
+	stateStr := state.String()
 
+	out := make(map[string]Verdict, len(j.rules))
+	for _, r := range j.rules {
+		v, err := c.callSystemOneRule(ctx, stateStr, r)
+		if err != nil {
+			return out, err
+		}
+		out[r.ID] = v
+	}
+	return out, nil
+}
+
+func (c *client) callSystemOneRule(ctx context.Context, state string, r Rule) (Verdict, error) {
+	qs := withVetoes([]Rule{r})
 	payload, _ := json.Marshal(map[string]any{
 		"model":     c.model,
-		"state":     state.String(),
-		"questions": systemOneQuestions(withVetoes(j.rules)),
+		"state":     state,
+		"questions": systemOneQuestions(qs),
 	})
 	req, err := http.NewRequestWithContext(ctx, "POST", systemOneRoot(c.base)+"/v1/systemone", bytes.NewReader(payload))
 	if err != nil {
-		return nil, err
+		return Verdict{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if err := authorizeRequest(req, c.source, c.apiKey); err != nil {
-		return nil, err
+		return Verdict{}, err
 	}
 	if !c.budget.take() {
-		return nil, errBudgetExhausted
+		return Verdict{}, errBudgetExhausted
 	}
 	var usage *systemOneUsage
 	if c.costs != nil {
@@ -165,14 +188,14 @@ func (c *client) callSystemOne(ctx context.Context, j job) (map[string]Verdict, 
 	}
 	res, err := sendRequest(c.httpc, req, c.source != nil || c.apiKey != "")
 	if err != nil {
-		return nil, err
+		return Verdict{}, err
 	}
 	defer res.Body.Close()
 	if res.StatusCode == http.StatusTooManyRequests || res.StatusCode == http.StatusServiceUnavailable {
-		return nil, err429{responseError(res, c.source, c.apiKey)}
+		return Verdict{}, err429{responseError(res, c.source, c.apiKey)}
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return nil, errors.New(responseError(res, c.source, c.apiKey))
+		return Verdict{}, errors.New(responseError(res, c.source, c.apiKey))
 	}
 	var resp struct {
 		Answers map[string]struct {
@@ -181,18 +204,36 @@ func (c *client) callSystemOne(ctx context.Context, j job) (map[string]Verdict, 
 		Usage *systemOneUsage `json:"usage"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&resp); err != nil {
-		return nil, err
+		return Verdict{}, err
 	}
 	usage = resp.Usage
 	probs := make(map[string]*float64, len(resp.Answers))
 	for id, a := range resp.Answers {
 		probs[id] = a.Noul
 	}
-	v, err := systemOneVerdicts(withVetoes(j.rules), probs, c.threshold)
+	v, err := systemOneVerdicts(qs, probs, c.threshold)
 	if err != nil {
-		return nil, err
+		return Verdict{}, err
 	}
-	return attachVetoes(j.rules, v), nil
+	return attachVetoes([]Rule{r}, v)[r.ID], nil
+}
+
+// applySystemOneThreshold derives Lint and Severity from a cached or fresh noul
+// probability so --threshold sweeps reuse cached verdicts without re-running.
+func applySystemOneThreshold(v Verdict, thresh float64) Verdict {
+	if thresh <= 0 {
+		thresh = 0.75
+	}
+	v.Lint = v.Confidence >= thresh
+	switch {
+	case !v.Lint:
+		v.Severity = "low"
+	case v.Confidence >= 0.9:
+		v.Severity = "high"
+	default:
+		v.Severity = "med"
+	}
+	return v
 }
 
 // systemOneQuestions: one yes/no question per rule; exception questions are asked as written.
@@ -210,22 +251,13 @@ func systemOneQuestions(rules []Rule) map[string]map[string]string {
 
 // systemOneVerdicts turns Jev's probabilities into verdicts; every rule needs a valid one.
 func systemOneVerdicts(rules []Rule, probs map[string]*float64, thresh float64) (map[string]Verdict, error) {
-	if thresh <= 0 {
-		thresh = 0.75
-	}
 	out := make(map[string]Verdict, len(rules))
 	for _, r := range rules {
 		p := probs[r.ID]
 		if p == nil || math.IsNaN(*p) || math.IsInf(*p, 0) || *p < 0 || *p > 1 {
 			return nil, fmt.Errorf("systemone response missing or invalid probability for %s", r.ID)
 		}
-		sev := "low"
-		if *p >= 0.9 {
-			sev = "high"
-		} else if *p >= thresh {
-			sev = "med"
-		}
-		out[r.ID] = Verdict{Lint: *p >= thresh, Severity: sev, Confidence: *p, Reason: r.Summary}
+		out[r.ID] = applySystemOneThreshold(Verdict{Confidence: *p, Reason: r.Summary}, thresh)
 	}
 	return out, nil
 }
@@ -252,7 +284,7 @@ func chatPrompt(j job, followUp string) string {
 
 func (c *client) callOnce(ctx context.Context, j job, followUp string) (map[string]Verdict, []string, error) {
 	body := map[string]any{
-		"model": c.model, "temperature": c.temp, "max_tokens": 600,
+		"model": c.model, "temperature": c.temp, "max_tokens": 4096,
 		"chat_template_kwargs": map[string]any{"enable_thinking": false},
 		"messages": []map[string]string{
 			{"role": "system", "content": systemPrompt},
@@ -311,7 +343,7 @@ func decodeCompletion(body io.Reader, usage **chatUsage) (string, error) {
 	if len(out.Choices) == 0 {
 		return "", errors.New("empty completion")
 	}
-	if m := out.Choices[0].Message; m.Content != nil {
+	if m := out.Choices[0].Message; m.Content != nil && strings.TrimSpace(*m.Content) != "" {
 		return *m.Content, nil
 	} else if m.Reasoning != nil {
 		return *m.Reasoning, nil
@@ -319,15 +351,58 @@ func decodeCompletion(body io.Reader, usage **chatUsage) (string, error) {
 	return "", nil
 }
 
+// extractJSONObject finds the last balanced {...} object so prose or reasoning
+// text mentioning braces earlier in the reply does not break JSON decoding.
+func extractJSONObject(raw string) (string, bool) {
+	end := strings.LastIndex(raw, "}")
+	if end < 0 {
+		return "", false
+	}
+	inStr, esc, depth, lastOpen := false, false, 0, -1
+	for i := 0; i <= end; i++ {
+		ch := raw[i]
+		if esc {
+			esc = false
+			continue
+		}
+		if inStr {
+			esc = ch == '\\'
+			inStr = ch != '"'
+			continue
+		}
+		switch ch {
+		case '"':
+			inStr = true
+		case '{':
+			if depth == 0 {
+				lastOpen = i
+			}
+			depth++
+		case '}':
+			if depth > 0 {
+				depth--
+				if depth == 0 && i == end && lastOpen >= 0 {
+					return raw[lastOpen : end+1], true
+				}
+			}
+		}
+	}
+	s := strings.Index(raw, "{")
+	if s < 0 || end <= s {
+		return "", false
+	}
+	return raw[s : end+1], true
+}
+
 // parseVerdicts extracts the rule-id → verdict map. It returns the verdicts
 // parsed so far plus the ids the model omitted; malformed JSON is an error.
 func parseVerdicts(raw string, j job) (map[string]Verdict, []string, error) {
-	s, e := strings.Index(raw, "{"), strings.LastIndex(raw, "}")
-	if s < 0 || e <= s {
+	blob, ok := extractJSONObject(raw)
+	if !ok {
 		return nil, nil, fmt.Errorf("no JSON in model reply: %.80q", raw)
 	}
 	var m map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(raw[s:e+1]), &m); err != nil {
+	if err := json.Unmarshal([]byte(blob), &m); err != nil {
 		return nil, nil, fmt.Errorf("bad model JSON: %w", err)
 	}
 	out := make(map[string]Verdict, len(j.rules))
@@ -346,22 +421,26 @@ func parseVerdicts(raw string, j job) (map[string]Verdict, []string, error) {
 		if err := json.Unmarshal(b, &v); err != nil {
 			return nil, nil, fmt.Errorf("bad verdict for %s: %w", r.ID, err)
 		}
-		if v.Line != nil && (*v.Line < j.unit.Start || *v.Line > j.unit.End) {
-			l := j.unit.Start
-			v.Line = &l
-		}
-		if v.Severity != "low" && v.Severity != "med" && v.Severity != "high" {
-			v.Severity = "med"
-		}
-		if v.Lint && v.Reason == "" {
-			v.Reason = "no reason given"
-		}
-		if v.Confidence < 0 || v.Confidence > 1 {
-			v.Confidence = 0.5
-		}
-		out[r.ID] = v
+		out[r.ID] = normalizeVerdict(v, j.unit)
 	}
 	return out, missing, nil
+}
+
+func normalizeVerdict(v Verdict, u Unit) Verdict {
+	if v.Line != nil && (*v.Line < u.Start || *v.Line > u.End) {
+		l := u.Start
+		v.Line = &l
+	}
+	if v.Severity != "low" && v.Severity != "med" && v.Severity != "high" {
+		v.Severity = "med"
+	}
+	if v.Lint && v.Reason == "" {
+		v.Reason = "no reason given"
+	}
+	if v.Confidence < 0 || v.Confidence > 1 {
+		v.Confidence = 0.5
+	}
+	return v
 }
 
 type cache struct {
@@ -377,13 +456,12 @@ func newCache(on bool) *cache {
 	return &cache{dir: filepath.Join(dir, "lintdec", "cache"), on: on}
 }
 
-func (c *cache) key(model, tempStr, ruleID string, u Unit) string {
+func (c *cache) key(model, tempStr, ruleID, version string, u Unit) string {
 	h := sha256.New()
 	abs, _ := filepath.Abs(u.File)
-	// promptVersion folds the system prompt and rubrics into the key, so a
-	// prompt or rubric edit invalidates stale verdicts automatically; the
-	// absolute path makes the cache stable across working directories.
-	fmt.Fprintf(h, "%s|%s|%s|%s|%s|%s\n%s\n%s", model, tempStr, ruleID, u.Kind, promptVersion, abs, u.Text, u.Context)
+	// version is per-rule for systemone (1 rule per prompt) and catalogue-wide
+	// for batched chat prompts, so rubric edits invalidate every affected verdict.
+	fmt.Fprintf(h, "%s|%s|%s|%s|%s|%s\n%s\n%s", model, tempStr, ruleID, u.Kind, version, abs, u.Text, u.Context)
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -413,10 +491,11 @@ func (c *cache) put(k string, v Verdict) {
 	os.WriteFile(filepath.Join(c.dir, k+".json"), b, 0o644)
 }
 
-// runWithRetry calls the model for the batch with up to three attempts.
-// 429s (gateway concurrency limit) get a long backoff; ctx cancels immediately.
+// runWithRetry calls the model for the batch with up to three attempts,
+// keeping any partial verdicts returned before a transient failure.
 func runWithRetry(ctx context.Context, c *client, j job) (map[string]Verdict, error) {
-	var v map[string]Verdict
+	merged := make(map[string]Verdict, len(j.rules))
+	pending := j.rules
 	var err error
 	for attempt := range 3 {
 		if attempt > 0 {
@@ -427,13 +506,30 @@ func runWithRetry(ctx context.Context, c *client, j job) (map[string]Verdict, er
 			select {
 			case <-time.After(wait):
 			case <-ctx.Done():
-				return nil, ctx.Err()
+				return merged, ctx.Err()
 			}
 		}
-		v, err = c.call(ctx, j)
+		var v map[string]Verdict
+		v, err = c.call(ctx, job{unit: j.unit, rules: pending})
+		maps.Copy(merged, v)
 		if err == nil || errors.Is(err, errBudgetExhausted) || ctx.Err() != nil {
 			break
 		}
+		pending = unansweredRules(pending, merged)
+		if len(pending) == 0 {
+			err = nil
+			break
+		}
 	}
-	return v, err
+	return merged, err
+}
+
+func unansweredRules(rules []Rule, done map[string]Verdict) []Rule {
+	var rest []Rule
+	for _, r := range rules {
+		if _, ok := done[r.ID]; !ok {
+			rest = append(rest, r)
+		}
+	}
+	return rest
 }
