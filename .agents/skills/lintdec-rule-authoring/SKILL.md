@@ -32,7 +32,7 @@ This skill defines the repeatable lifecycle for taking a `lintdec` rule from a p
 ## Step-by-Step Procedure
 
 - [ ] **Step 1 — Admission Check (5 Gates):** Verify the candidate passes all five admission gates in `references/admission-and-rubric-guide.md`: (1) requires semantic judgment, (2) decidable from `TARGET` + `CONTEXT` alone, (3) backed by a primary source URL, (4) gives the author one concrete fix in the diff, and (5) is not subsumed by an existing default-on rule. Reject early if any gate fails.
-- [ ] **Step 2 — Pick Unit Kind & Pre-Filter First:** Choose the narrowest existing `Unit.Kind` (`Comment`, `TestFunction`, `Function`, `Script`, `Interface`, `File`, `Paragraph`, `Bullet`, `Step`, `MixedList`, `Section`, `Document`, `ActorVerb`, `NounVerb`, `WordyPhrase`), or add a dedicated kind if existing kinds bind unrelated rules (as `Step` and `Script` did). Before writing any prompt, design a trigger-preserving deterministic pre-filter in `filters.go` (or candidate extractor in `candidates.go`) so irrelevant units cost zero model calls.
+- [ ] **Step 2 — Pick Unit Kind & Pre-Filter First:** Choose the narrowest existing `Unit.Kind` (`Comment`, `TestFunction`, `Function`, `Script`, `Interface`, `File`, `Paragraph`, `Bullet`, `Step`, `Steps`, `MixedList`, `Section`, `Document`, `ActorVerb`, `NounVerb`, `WordyPhrase`), or add a dedicated kind if existing kinds bind unrelated rules (as `Step` and `Script` did). Before writing any prompt, design a trigger-preserving deterministic pre-filter in `filters.go` (or candidate extractor in `candidates.go`) so irrelevant units cost zero model calls.
 - [ ] **Step 3 — Draft Rubric & Isolated Veto:** Write the `Rule` in `rules.go` using judgment-only prose (no line/word/parameter counts in prompts) with a followable `https://` or `http://` source URL and fixed `ruleLevel`. If the rule has common legitimate exceptions, write a **self-contained, positively framed** veto question in `veto.go` (`ruleVetoes`). Always start new rules in `defaultOff: true` until Step 6 passes.
 - [ ] **Step 4 — Wire & Run Offline Verification:** Register the rule in `rules.go`, `veto.go`, and (if filtered) `filters.go`. Add unit tests covering pre-filter edge cases (punctuation, hyphenated rule IDs, unwrapped text) and `buildJobs` wiring in `filters_test.go`. Run:
   ```bash
@@ -43,6 +43,7 @@ This skill defines the repeatable lifecycle for taking a `lintdec` rule from a p
 - [ ] **Step 7 — Decide Default Status, Record Evidence, and Gate Diff:**
   - Promote out of `defaultOff` only if it lands in Tier 1 (high precision on Clef, clear maintainability value, acceptable marginal cost).
   - Keep in `defaultOff` if Tier 2 (real hits, high cost or narrow applicability).
+  - Keep in `defaultOff` and re-check recall in the blind lab if Tier 3 (zero above-floor hits — insufficient data).
   - Delete if Tier 4 (high false positives, missing-context flaw, or subsumed).
   - Record measured counts, lab outcomes, and decisions in `tuning-fps.md`.
   - After committing, run `go run ./tools/sloplint diff origin/main` before pushing.
@@ -53,7 +54,7 @@ This skill defines the repeatable lifecycle for taking a `lintdec` rule from a p
 - **System One vetoes are lazy and isolated (`systemone-1q-iso`):** The veto question is sent in a **separate** `/v1/systemone` request without the primary rubric. Never use dangling references like `"the noun phrase"` or `"this error"` — always name `TARGET` and the exact construct so the question makes sense standalone.
 - **Lab leakage invalidates recall numbers:** Never put `// PLANTED <rule-id>` comments or diagnostic parentheticals like `## Forwarding (ambiguous)` in lab fixtures — `HEADING:` and surrounding comments are passed to the model in `CONTEXT`.
 - **Consecutive Go comments merge into one `Comment` unit:** Separate independent comment test cases with statements in Go lab fixtures, and verify unit boundaries with `lintdec --rules <id> --dump-units <dir>` before calling Clef.
-- **Never run two Clef jobs concurrently:** Local Clef runs with `-np 1` on the media 3090 and is shared with `quack`'s `reviewer` judge. Check for running `quack` review sessions before starting a Clef sweep.
+- **Never run two single-slot System One jobs concurrently:** If your local System One server is single-slot (`-np 1`) or shared with review automation, check for active jobs before starting a sweep and keep `--workers 1`.
 - **Bump `cacheTemp()` on request-shape changes:** Editing a rubric or veto automatically invalidates that rule via `ruleVersions`, but changing how `/v1/systemone` calls are structured requires bumping `cacheTemp()` in `decide.go`.
 - **Single-repo blind spots cut both ways:** A `sloplint`-clean repo hides real recall on opt-in rules, while a mature repo exposes false positives (such as live backward-compatibility comments on `comment-history`) that small repos miss.
 - **Invariants enforced by `go test ./...`:** `TestEveryRuleHasSource` requires `://` in `Rule.Source`; `TestEveryFilterMapsToKnownRule` fails on stale rule IDs in `ruleFilters`, `ruleVetoes`, `ruleFloors`, or `defaultOff`.

@@ -91,3 +91,7 @@ Normal directory scans do not apply `.gitignore`. Use `--exclude` or `lintdec.ya
 [editors/vscode](editors/vscode/README.md) shows findings in VS Code as squiggles and in the Problems panel.
 
 Reports and verdicts cached under `~/.cache/lintdec/cache` can contain sensitive information; protect them. Use `--no-cache` to bypass the cache, and don't put credentials in `lintdec.yaml`.
+
+## Adding rules
+
+See [.agents/skills/lintdec-rule-authoring/SKILL.md](.agents/skills/lintdec-rule-authoring/SKILL.md) for the rule admission gates, pre-filter/veto authoring guide, blind synthetic recall lab, and multi-repo promotion process.

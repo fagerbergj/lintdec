@@ -2,8 +2,11 @@
 """Score a lintdec --calibrate --threshold 0.50 --out jsonl run against a blind lab manifest."""
 
 import json
+import re
 import sys
+from pathlib import Path
 
+# Mirror of veto.go ruleFloors / ruleVetoCuts / vetoConfidence; synced at runtime if veto.go is nearby.
 DEFAULT_FLOORS = {
     "todo-no-owner": 0.9,
     "comment-history": 0.85,
@@ -22,45 +25,73 @@ DEFAULT_FLOORS = {
 VETO_CUTS = {"flakey-test": 0.3, "comment-excuse": 0.7}
 
 
-def is_reportable(finding: dict) -> bool:
+def load_veto_maps() -> tuple[dict[str, float], dict[str, float]]:
+    floors, cuts = dict(DEFAULT_FLOORS), dict(VETO_CUTS)
+    veto_go = Path(__file__).resolve().parents[4] / "veto.go"
+    if not veto_go.is_file():
+        return floors, cuts
+    text = veto_go.read_text()
+    for var_name, target in (("ruleFloors", floors), ("ruleVetoCuts", cuts)):
+        m = re.search(rf"var\s+{var_name}\s*=\s*map\[string\]float64\{{([^}}]*)\}}", text, re.S)
+        if m:
+            target.clear()
+            for rid, val in re.findall(r'"([^"]+)"\s*:\s*([0-9.]+)', m.group(1)):
+                target[rid] = float(val)
+    return floors, cuts
+
+
+def is_reportable(finding: dict, floors: dict[str, float], cuts: dict[str, float]) -> bool:
     rule = finding["rule"]
-    floor = DEFAULT_FLOORS.get(rule, 0.75)
-    cut = VETO_CUTS.get(rule, 0.5)
+    floor = floors.get(rule, 0.75)
+    cut = cuts.get(rule, 0.5)
     veto = finding.get("veto")
     return finding["confidence"] >= floor and (veto is None or veto < cut)
 
 
 def load_findings(path: str) -> list[dict]:
+    rows = []
     with open(path) as f:
-        return [json.loads(line) for line in f if line.strip()]
+        for idx, raw in enumerate(f, 1):
+            line = raw.strip()
+            if not line:
+                continue
+            obj = json.loads(line)
+            if not isinstance(obj, dict) or "rule" not in obj:
+                raise ValueError(f"{path}:{idx}: expected JSONL finding object (use --out jsonl, not --out json)")
+            rows.append(obj)
+    return rows
 
 
 def match_target(findings: list[dict], rule: str, file_suffix: str, line: int) -> list[dict]:
     return [
         r for r in findings
-        if r["rule"] == rule and r["file"].endswith(file_suffix) and r["line"] == line
+        if r["rule"] == rule
+        and r["file"].endswith(file_suffix)
+        and r["line"] <= line <= r.get("end_line", r["line"])
     ]
 
 
-def fmt_score(hit: dict) -> str:
+def fmt_score(hit: dict, floors: dict[str, float], cuts: dict[str, float]) -> str:
     veto = hit.get("veto")
     vstr = f"{veto:.3f}" if veto is not None else "none"
-    tag = "REP" if is_reportable(hit) else "SUP"
+    tag = "REP" if is_reportable(hit, floors, cuts) else "SUP"
     return f"{tag} conf={hit['confidence']:.3f} veto={vstr}"
 
 
-def score_rule(rule: str, spec: dict, findings: list[dict]) -> tuple[int, int, int, int]:
+def score_rule(rule: str, spec: dict, findings: list[dict], floors: dict[str, float], cuts: dict[str, float]) -> tuple[int, int, int, int]:
     loud_hits = loud_total = quiet_fps = quiet_total = 0
-    for item in spec.get("loud", []):
+    for item in spec["loud"]:
         loud_total += 1
         hits = match_target(findings, rule, item["file"], item["line"])
-        rep = [h for h in hits if is_reportable(h)]
+        rep = [h for h in hits if is_reportable(h, floors, cuts)]
         subsumed = [
             r["rule"] for r in findings
-            if r["rule"] != rule and r["file"].endswith(item["file"])
-            and r["line"] == item["line"] and is_reportable(r)
+            if r["rule"] != rule
+            and r["file"].endswith(item["file"])
+            and r["line"] <= item["line"] <= r.get("end_line", r["line"])
+            and is_reportable(r, floors, cuts)
         ]
-        status = fmt_score(hits[0]) if hits else "MISS (<0.50)"
+        status = fmt_score(hits[0], floors, cuts) if hits else "NO HIT at this line"
         sub = f"  [also caught by: {', '.join(sorted(set(subsumed)))}]" if subsumed else ""
         if rep:
             loud_hits += 1
@@ -69,25 +100,44 @@ def score_rule(rule: str, spec: dict, findings: list[dict]) -> tuple[int, int, i
     for item in spec.get("quiet", []):
         quiet_total += 1
         hits = match_target(findings, rule, item["file"], item["line"])
-        rep = [h for h in hits if is_reportable(h)]
+        rep = [h for h in hits if is_reportable(h, floors, cuts)]
         if rep:
             quiet_fps += 1
-            print(f"  QUIET {item['file']}:{item['line']:<3d} -> FP! {fmt_score(rep[0])}")
+            print(f"  QUIET {item['file']}:{item['line']:<3d} -> FP! {fmt_score(rep[0], floors, cuts)}")
+        else:
+            print(f"  QUIET {item['file']}:{item['line']:<3d} -> ok")
     return loud_hits, loud_total, quiet_fps, quiet_total
+
+
+def validate_manifest(manifest: object) -> str | None:
+    if not isinstance(manifest, dict) or not manifest:
+        return "manifest must be a non-empty JSON object mapping rule ids to {loud, quiet}"
+    for rule, spec in sorted(manifest.items()):
+        if not isinstance(spec, dict) or not isinstance(spec.get("loud"), list) or not spec["loud"]:
+            return f"manifest: {rule!r} needs a non-empty 'loud' list"
+    return None
 
 
 def main() -> int:
     if len(sys.argv) != 3:
         print("usage: score-lab.py <findings.jsonl> <manifest.json>", file=sys.stderr)
         return 2
-    findings = load_findings(sys.argv[1])
+    try:
+        findings = load_findings(sys.argv[1])
+    except ValueError as err:
+        print(f"error: {err}", file=sys.stderr)
+        return 2
     with open(sys.argv[2]) as f:
         manifest = json.load(f)
+    if err := validate_manifest(manifest):
+        print(f"error: {err}", file=sys.stderr)
+        return 2
 
+    floors, cuts = load_veto_maps()
     tot_lh = tot_lt = tot_qfp = tot_qt = 0
     for rule, spec in sorted(manifest.items()):
         print(f"\n[{rule}]")
-        lh, lt, qfp, qt = score_rule(rule, spec, findings)
+        lh, lt, qfp, qt = score_rule(rule, spec, findings, floors, cuts)
         tot_lh += lh
         tot_lt += lt
         tot_qfp += qfp
