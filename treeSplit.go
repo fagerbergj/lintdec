@@ -29,61 +29,65 @@ type tsCfg struct {
 	lang      func() *sitter.Language
 	ifaces    map[string]bool // node types that map to Interface units
 	callTests map[string]bool // call names that make the call a TestFunction
+	callHooks map[string]bool // setup/teardown hook calls (not TestFunctions; skip nested locals)
 	testPref  string          // function-name prefix that makes a TestFunction
 }
+
+var jsTestCalls = map[string]bool{"it": true, "test": true, "xit": true, "xtest": true, "fit": true, "ftest": true}
+var jsHookCalls = map[string]bool{"before": true, "after": true, "beforeEach": true, "afterEach": true, "beforeAll": true, "afterAll": true}
 
 var tsLangs = map[string]tsCfg{
 	"ts": {
 		"typescript", tsx.GetLanguage,
 		map[string]bool{"interface_declaration": true},
-		map[string]bool{"describe": true, "it": true, "test": true, "xit": true, "xdescribe": true, "xtest": true, "beforeEach": true, "afterEach": true, "beforeAll": true, "afterAll": true},
+		jsTestCalls, jsHookCalls,
 		"",
 	},
 	"js": {
 		"javascript", javascript.GetLanguage,
 		nil,
-		map[string]bool{"describe": true, "it": true, "test": true, "xit": true, "xdescribe": true, "xtest": true, "beforeEach": true, "afterEach": true, "beforeAll": true, "afterAll": true},
+		jsTestCalls, jsHookCalls,
 		"",
 	},
 	"py": {
 		"python", python.GetLanguage,
-		nil, nil, "test_",
+		nil, nil, nil, "test_",
 	},
 	"rs": {
 		"rust", rust.GetLanguage,
 		map[string]bool{"trait_definition": true},
-		nil, "test_",
+		nil, nil, "test_",
 	},
 	"sh": {
 		"bash", bash.GetLanguage,
-		nil, nil, "",
+		nil, nil, nil, "",
 	},
 	"java": {
 		"java", java.GetLanguage,
 		map[string]bool{"interface_declaration": true},
-		nil, "test_",
+		nil, nil, "test_",
 	},
 	"c": {
 		"c", c.GetLanguage,
-		nil, nil, "",
+		nil, nil, nil, "",
 	},
 	"cpp": {
 		"cpp", cpp.GetLanguage,
-		nil, nil, "",
+		nil, nil, nil, "",
 	},
 	"cs": {
 		"csharp", csharp.GetLanguage,
 		map[string]bool{"interface_declaration": true},
-		nil, "",
+		nil, nil, "",
 	},
 	"kt": {
 		"kotlin", kotlin.GetLanguage,
 		map[string]bool{"interface_declaration": true},
-		nil, "",
+		nil, nil, "",
 	},
 	"swift": {
 		"swift", swift.GetLanguage,
-		nil, nil, "",
+		nil, nil, nil, "",
 	},
 }
 
@@ -124,23 +128,17 @@ func splitTree(path string, src []byte, cfg tsCfg) []Unit {
 		return u
 	}
 
-	// Sibling-order traversal so a doc comment is seen before its function.
-	// inCovered marks arrows inside an already-emitted const declaration.
-	var walk func(n *sitter.Node, inCovered bool)
-	walk = func(n *sitter.Node, inCovered bool) {
+	// Sibling-order traversal so a doc comment is seen before its declaration.
+	// Comments themselves are collected in a separate full-tree pass below so
+	// doc comments and in-function comments are linted just like Go's f.Comments.
+	var walk func(n *sitter.Node)
+	walk = func(n *sitter.Node) {
 		for i, count := 0, int(n.ChildCount()); i < count; i++ {
 			c := n.Child(i)
 			t := c.Type()
 			if strings.Contains(t, "comment") {
 				if attachesDoc(c, cfg, src) {
-					docs[c] = docRun(c, src) // attach below, not emitted as a unit
-				} else {
-					u, last := commentUnit(path, c, cfg, src, lines)
-					units = append(units, u)
-					for last != c && c.NextSibling() != nil {
-						c = c.NextSibling()
-						i++
-					}
+					docs[c] = docRun(c, src)
 				}
 				continue
 			}
@@ -153,28 +151,24 @@ func splitTree(path string, src []byte, cfg tsCfg) []Unit {
 				if inner := innerDecl(c); inner != nil {
 					if kind := kindForNode(inner, cfg, src); kind != "" {
 						units = append(units, funcUnit(c, kind))
-						continue // the wrapper is the unit; nested decls inside are rare
+						continue
 					}
 				}
-				walk(c, inCovered)
+				walk(c)
 				continue
 			}
-			switch {
-			case kindForNode(c, cfg, src) != "":
-				if t == "call_expression" {
-					units = append(units, funcUnit(c, kindForNode(c, cfg, src)))
-					continue // test body is part of the unit; no nested units
-				}
-				units = append(units, funcUnit(c, kindForNode(c, cfg, src)))
-				if t == "lexical_declaration" {
-					walk(c, true)
-				}
-			default:
-				walk(c, inCovered)
+			if t == "call_expression" && isHookCall(calleeName(c, src), cfg) {
+				continue // setup/teardown hook; don't emit local helpers inside as top-level Functions
 			}
+			if kind := kindForNode(c, cfg, src); kind != "" {
+				units = append(units, funcUnit(c, kind))
+				continue // body is part of the unit; no nested local functions
+			}
+			walk(c)
 		}
 	}
-	walk(root, false)
+	walk(root)
+	units = append(units, collectComments(root, path, src, lines)...)
 
 	// File skeleton from top-level declarations.
 	var sk []string
@@ -233,23 +227,79 @@ func attachesDoc(c *sitter.Node, cfg tsCfg, src []byte) bool {
 	return next != nil && isUnitStart(next, cfg, src) && c.EndPoint().Row+1 == next.StartPoint().Row
 }
 
-// commentUnit: groups consecutive non-doc comment siblings into one Comment
-// unit with +-8 lines of surrounding code as Context; returns the last sibling consumed.
-func commentUnit(path string, first *sitter.Node, cfg tsCfg, src []byte, lines []string) (Unit, *sitter.Node) {
-	last := first
-	for nxt := first.NextSibling(); nxt != nil && strings.Contains(nxt.Type(), "comment") && nxt.StartPoint().Row <= last.EndPoint().Row+1 && !attachesDoc(nxt, cfg, src); nxt = nxt.NextSibling() {
-		last = nxt
+// collectComments walks the whole tree and groups contiguous full-line comment
+// runs into Comment units with +-8 lines of surrounding code context.
+func collectComments(root *sitter.Node, path string, src []byte, lines []string) []Unit {
+	var nodes []*sitter.Node
+	var visit func(n *sitter.Node)
+	visit = func(n *sitter.Node) {
+		if strings.Contains(n.Type(), "comment") {
+			txt := n.Content(src)
+			if !(n.StartPoint().Row == 0 && strings.HasPrefix(txt, "#!")) && !strings.Contains(txt, "lintdec:ignore") {
+				nodes = append(nodes, n)
+			}
+			return
+		}
+		for i, count := 0, int(n.ChildCount()); i < count; i++ {
+			visit(n.Child(i))
+		}
 	}
-	s, e := int(first.StartPoint().Row)+1, int(last.EndPoint().Row)+1
-	return Unit{Kind: "Comment", File: path, Start: s, End: e,
-		Text:    strings.Join(lines[s-1:e], "\n"),
-		Context: commentContext(lines, s, e)}, last
+	visit(root)
+
+	var out []Unit
+	for i := 0; i < len(nodes); {
+		first := nodes[i]
+		last := first
+		var parts []string
+		parts = append(parts, first.Content(src))
+		j := i + 1
+		for j < len(nodes) && canMergeComment(last, nodes[j], lines) {
+			last = nodes[j]
+			parts = append(parts, last.Content(src))
+			j++
+		}
+		s, e := int(first.StartPoint().Row)+1, int(last.EndPoint().Row)+1
+		declEnd := 0
+		if nxt := last.NextSibling(); nxt != nil && int(nxt.StartPoint().Row)+1 <= e+1 {
+			declEnd = int(nxt.EndPoint().Row) + 1
+		}
+		out = append(out, Unit{
+			Kind: "Comment", File: path, Start: s, End: e,
+			Text:    strings.Join(parts, "\n"),
+			Context: commentContext(lines, s, e, declEnd),
+		})
+		i = j
+	}
+	return out
 }
 
-// commentContext: +-8 non-blank surrounding lines with line numbers.
-func commentContext(lines []string, s, e int) string {
+// canMergeComment reports whether b continues a on the immediately next line as
+// part of the same full-line comment block (never merging trailing inline comments).
+func canMergeComment(a, b *sitter.Node, lines []string) bool {
+	if b.StartPoint().Row != a.EndPoint().Row+1 || b.StartPoint().Column != a.StartPoint().Column {
+		return false
+	}
+	return isCommentOnlyLine(lines, int(a.StartPoint().Row), int(a.StartPoint().Column)) &&
+		isCommentOnlyLine(lines, int(b.StartPoint().Row), int(b.StartPoint().Column))
+}
+
+func isCommentOnlyLine(lines []string, row, col int) bool {
+	if row < 0 || row >= len(lines) || col > len(lines[row]) {
+		return false
+	}
+	return strings.TrimSpace(lines[row][:col]) == ""
+}
+
+// commentContext returns surrounding non-blank lines with line numbers: +-8 lines
+// by default, extended through an immediately following declaration (up to +40
+// lines) so comment-stale sees the full body of small documented functions.
+func commentContext(lines []string, s, e, declEnd int) string {
+	hi := e + 8
+	if declEnd > hi {
+		hi = min(declEnd, e+40)
+	}
 	var ctx []string
-	for ln := s - 8; ln <= e+8; ln++ {
+	for ln := s - 8; ln <= hi; ln++ {
 		if ln < 1 || ln > len(lines) || (ln >= s && ln <= e) {
 			continue
 		}
@@ -257,7 +307,25 @@ func commentContext(lines []string, s, e int) string {
 			ctx = append(ctx, fmt.Sprintf("%d\t%s", ln, lines[ln-1]))
 		}
 	}
+	if declEnd > hi {
+		ctx = append(ctx, fmt.Sprintf("... (continues to line %d)", declEnd))
+	}
 	return strings.Join(ctx, "\n")
+}
+
+func isTestCall(callee string, cfg tsCfg) bool {
+	if len(cfg.callTests) == 0 {
+		return false
+	}
+	if cfg.callTests[callee] {
+		return true
+	}
+	base, prop, ok := strings.Cut(callee, ".")
+	return ok && cfg.callTests[base] && prop != "todo"
+}
+
+func isHookCall(callee string, cfg tsCfg) bool {
+	return len(cfg.callHooks) > 0 && cfg.callHooks[callee]
 }
 
 func kindForNode(n *sitter.Node, cfg tsCfg, src []byte) string {
@@ -271,7 +339,7 @@ func kindForNode(n *sitter.Node, cfg tsCfg, src []byte) string {
 		}
 		return "Function"
 	}
-	if t == "call_expression" && cfg.callTests[calleeName(n, src)] {
+	if t == "call_expression" && isTestCall(calleeName(n, src), cfg) {
 		return "TestFunction"
 	}
 	if t == "lexical_declaration" && hasFnValue(n) {
@@ -280,25 +348,39 @@ func kindForNode(n *sitter.Node, cfg tsCfg, src []byte) string {
 	return ""
 }
 
-// hasFnValue: does a lexical_declaration declare a function or arrow?
+// hasFnValue reports whether a lexical_declaration directly initializes a
+// variable to a function or arrow expression (not a call/array/object literal
+// that happens to contain a callback).
 func hasFnValue(n *sitter.Node) bool {
-	var check func(m *sitter.Node, depth int) bool
-	check = func(m *sitter.Node, depth int) bool {
-		if depth > 3 {
+	for i, count := 0, int(n.NamedChildCount()); i < count; i++ {
+		c := n.NamedChild(i)
+		if c.Type() == "variable_declarator" && isFnExpr(c.ChildByFieldName("value")) {
+			return true
+		}
+	}
+	return false
+}
+
+func isFnExpr(n *sitter.Node) bool {
+	for n != nil {
+		switch n.Type() {
+		case "arrow_function", "function_expression":
+			return true
+		case "parenthesized_expression", "as_expression", "satisfies_expression":
+			if n.NamedChildCount() == 0 {
+				return false
+			}
+			n = n.NamedChild(0)
+		case "type_assertion":
+			if n.NamedChildCount() < 2 {
+				return false
+			}
+			n = n.NamedChild(int(n.NamedChildCount()) - 1)
+		default:
 			return false
 		}
-		for i, count := 0, int(m.NamedChildCount()); i < count; i++ {
-			c := m.NamedChild(i)
-			if c.Type() == "arrow_function" || c.Type() == "function_expression" {
-				return true
-			}
-			if check(c, depth+1) {
-				return true
-			}
-		}
-		return false
 	}
-	return check(n, 0)
+	return false
 }
 
 // funcName returns the declared identifier of a function-like node.

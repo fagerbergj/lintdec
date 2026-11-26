@@ -91,8 +91,10 @@ export function greet(name: string) {
 }
 `
 	units := splitTree("gap.ts", []byte(tsSrc), tsLangs["ts"])
+	foundFn := false
 	for _, u := range units {
 		if u.Kind == "Function" {
+			foundFn = true
 			if strings.Contains(u.Context, "unrelated") {
 				t.Errorf("blank-line-separated comment leaked into doc context: %q", u.Context)
 			}
@@ -100,6 +102,9 @@ export function greet(name: string) {
 				t.Errorf("adjacent doc comment missing from context: %q", u.Context)
 			}
 		}
+	}
+	if !foundFn {
+		t.Fatal("expected Function unit for greet")
 	}
 
 	javaSrc := `class Box {
@@ -151,6 +156,81 @@ func TestSplitTreeTSInterfaceOnly(t *testing.T) {
 	if n := countKind(units, "Interface"); n != 1 {
 		t.Errorf("want 1 Interface (interface_declaration only, not type_alias_declaration), got %d", n)
 	}
+}
+
+func TestSplitTreeTSDescribeAndCallbacks(t *testing.T) {
+	src := `before(async () => {
+  const localHelper = () => 1;
+});
+beforeEach(() => {});
+const ROUTES = [['GET', () => 200]];
+const TABLE = { add: () => 1, rm: () => 2 };
+const mapped = items.map((x) => x + 1);
+const outer = () => {
+  const inner = () => 2;
+  return inner();
+};
+describe('suite', () => {
+  it('first test', () => { expect(1).toBe(1); });
+  it.skip('second test', () => { expect(2).toBe(2); });
+  test('third test', () => { expect(3).toBe(3); });
+  it.todo('not implemented yet');
+});
+`
+	units := splitTree("suite.test.ts", []byte(src), tsLangs["ts"])
+	if n := countKind(units, "TestFunction"); n != 3 {
+		t.Errorf("want 3 TestFunction units (it, it.skip, test; not describe/before/todo), got %d: %+v", n, units)
+	}
+	if n := countKind(units, "Function"); n != 1 {
+		t.Errorf("want 1 Function unit (outer only; not ROUTES/TABLE/mapped/localHelper/inner), got %d: %+v", n, units)
+	}
+}
+
+func TestSplitTreeTSDocAndInlineComments(t *testing.T) {
+	src := `#!/usr/bin/env node
+// line 1 of doc
+// line 2 of doc
+export const run = () => {
+  //lintdec:ignore comment-tautology
+  // inline note
+  return 1;
+};
+`
+	units := splitTree("run.ts", []byte(src), tsLangs["ts"])
+	var comments []Unit
+	for _, u := range units {
+		if u.Kind == "Comment" {
+			comments = append(comments, u)
+		}
+	}
+	if len(comments) != 2 {
+		t.Fatalf("want 2 Comment units (grouped 2-line doc + inline note, skipping shebang & ignore), got %d: %+v", len(comments), comments)
+	}
+	if comments[0].Start != 2 || comments[0].End != 3 {
+		t.Errorf("doc comment split wrong: lines %d-%d, want 2-3", comments[0].Start, comments[0].End)
+	}
+	if !strings.Contains(comments[1].Text, "inline note") {
+		t.Errorf("missing inline comment: %+v", comments[1])
+	}
+}
+
+func TestCommentContextCoversFollowingFunction(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("// mentions lineSixteenToken\nexport function demo() {\n")
+	for range 12 {
+		b.WriteString("  const x = 1;\n")
+	}
+	b.WriteString("  return 'lineSixteenToken';\n}\n")
+	units := splitTree("demo.ts", []byte(b.String()), tsLangs["ts"])
+	for _, u := range units {
+		if u.Kind == "Comment" {
+			if !strings.Contains(u.Context, "lineSixteenToken") {
+				t.Errorf("doc comment context truncated before end of function:\n%s", u.Context)
+			}
+			return
+		}
+	}
+	t.Fatal("missing Comment unit")
 }
 
 func countKind(units []Unit, kind string) int {

@@ -99,18 +99,16 @@ func splitGo(path string, src []byte) []Unit {
 		}
 	}
 
+	declEnds := map[int]int{}
+	for _, d := range f.Decls {
+		sLn, eLn := fset.Position(d.Pos()).Line, fset.Position(d.End()).Line
+		if eLn > declEnds[sLn] {
+			declEnds[sLn] = eLn
+		}
+	}
 	for _, g := range f.Comments {
 		s, e := fset.Position(g.Pos()).Line, fset.Position(g.End()).Line
-		var ctx []string
-		for ln := s - 8; ln <= e+8; ln++ {
-			if ln < 1 || ln > len(lines) || (ln >= s && ln <= e) {
-				continue
-			}
-			if t := strings.TrimSpace(lines[ln-1]); t != "" {
-				ctx = append(ctx, fmt.Sprintf("%d\t%s", ln, lines[ln-1]))
-			}
-		}
-		add("Comment", g.Pos(), g.End(), strings.Join(ctx, "\n"))
+		add("Comment", g.Pos(), g.End(), commentContext(lines, s, e, declEnds[e+1]))
 	}
 	return units
 }
@@ -128,7 +126,9 @@ func splitMarkdown(path string, src []byte) []Unit {
 			}
 		}
 	}
+	outline := mdOutline(lines, start)
 	fence := false
+	heading := ""
 	i, n := start, len(lines)
 	for i < n {
 		t := strings.TrimSpace(lines[i])
@@ -137,18 +137,24 @@ func splitMarkdown(path string, src []byte) []Unit {
 			i++
 			continue
 		}
-		if fence || t == "" || strings.HasPrefix(t, "#") {
+		if !fence && strings.HasPrefix(t, "#") {
+			heading = t
+			i++
+			continue
+		}
+		if fence || t == "" {
 			i++
 			continue
 		}
 		start := i
+		ctx := mdContext(outline, heading)
 		switch {
 		case strings.HasPrefix(t, "|"):
 			// table block: first-class unit; only table rules may apply
 			for i < n && strings.HasPrefix(strings.TrimSpace(lines[i]), "|") {
 				i++
 			}
-			units = append(units, Unit{Kind: "Table", File: path, Start: start + 1, End: i, Text: strings.Join(lines[start:i], "\n")})
+			units = append(units, Unit{Kind: "Table", File: path, Start: start + 1, End: i, Text: strings.Join(lines[start:i], "\n"), Context: ctx})
 			continue
 		case isBullet(t):
 			for i < n {
@@ -168,9 +174,38 @@ func splitMarkdown(path string, src []byte) []Unit {
 				i++
 			}
 		}
-		units = append(units, Unit{Kind: mdKind(isBullet(strings.TrimSpace(lines[start]))), File: path, Start: start + 1, End: i, Text: strings.Join(lines[start:i], "\n")})
+		units = append(units, Unit{Kind: mdKind(isBullet(strings.TrimSpace(lines[start]))), File: path, Start: start + 1, End: i, Text: strings.Join(lines[start:i], "\n"), Context: ctx})
 	}
 	return units
+}
+
+func mdOutline(lines []string, start int) string {
+	var hs []string
+	fence := false
+	for i := start; i < len(lines); i++ {
+		t := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(t, "```") {
+			fence = !fence
+			continue
+		}
+		if !fence && strings.HasPrefix(t, "#") {
+			hs = append(hs, fmt.Sprintf("%d\t%s", i+1, t))
+			if len(hs) >= 40 {
+				break
+			}
+		}
+	}
+	return strings.Join(hs, "\n")
+}
+
+func mdContext(outline, heading string) string {
+	if outline == "" {
+		return ""
+	}
+	if heading == "" {
+		return "Document headings:\n" + outline
+	}
+	return "Current section: " + heading + "\nDocument headings:\n" + outline
 }
 
 func mdKind(bullet bool) string {
@@ -204,7 +239,7 @@ func isIndented(line string) bool {
 	return len(line) > 0 && (line[0] == ' ' || line[0] == '\t')
 }
 
-// contentFor picks what a whole-scope rule sees for an oversized unit: a
+// digestFor picks what a whole-scope rule sees for an oversized unit: a
 // line-numbered digest of signature/branch/assert/return lines. Local rules
 // get raw windows instead (see lint.go).
 func digestFor(u Unit, lines []string) string {
@@ -218,9 +253,17 @@ func digestFor(u Unit, lines []string) string {
 		keep := ln <= u.Start+2
 		if !keep {
 			switch {
-			case strings.HasPrefix(s, "if "), strings.HasPrefix(s, "switch "), strings.HasPrefix(s, "for "),
+			case strings.HasPrefix(s, "if "), strings.HasPrefix(s, "if("),
+				strings.HasPrefix(s, "switch "), strings.HasPrefix(s, "switch("),
+				strings.HasPrefix(s, "for "), strings.HasPrefix(s, "for("),
+				strings.HasPrefix(s, "while "), strings.HasPrefix(s, "while("),
+				strings.HasPrefix(s, "try "), strings.HasPrefix(s, "try{"), strings.HasPrefix(s, "try:"),
+				strings.HasPrefix(s, "catch "), strings.HasPrefix(s, "catch("), strings.HasPrefix(s, "catch{"),
+				strings.HasPrefix(s, "except "), strings.HasPrefix(s, "except:"),
+				strings.HasPrefix(s, "throw "), strings.HasPrefix(s, "raise "),
 				strings.HasPrefix(s, "return "), strings.HasPrefix(s, "defer "), strings.HasPrefix(s, "go "),
-				strings.Contains(s, "assert."), strings.Contains(s, "require."),
+				strings.Contains(s, "assert."), strings.Contains(s, "assert("), strings.Contains(s, "expect("),
+				strings.Contains(s, "require."),
 				strings.Contains(s, "t.Error"), strings.Contains(s, "t.Fatal"), strings.Contains(s, "t.Log"):
 				keep = true
 			}
