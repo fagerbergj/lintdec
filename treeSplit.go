@@ -97,7 +97,7 @@ var tsLangs = map[string]tsCfg{
 var tsExt = map[string]string{
 	".ts": "ts", ".tsx": "ts", ".mts": "ts", ".cts": "ts",
 	".js": "js", ".jsx": "js", ".mjs": "js", ".cjs": "js",
-	".py": "py", ".rs": "rs", ".sh": "sh", ".bash": "sh",
+	".py": "py", ".rs": "rs", ".sh": "sh", ".bash": "sh", ".zsh": "sh",
 	".java": "java", ".c": "c", ".h": "c",
 	".cc": "cpp", ".cpp": "cpp", ".cxx": "cpp", ".hpp": "cpp", ".hh": "cpp",
 	".cs": "cs", ".kt": "kt", ".kts": "kt", ".swift": "swift",
@@ -174,6 +174,9 @@ func splitTree(path string, src []byte, cfg tsCfg) []Unit {
 		}
 	}
 	walk(root)
+	if cfg.name == "bash" {
+		units = append(units, shellBodyUnits(root, path, lines)...)
+	}
 	units = append(units, collectComments(root, path, cfg, src, lines)...)
 
 	// File skeleton from top-level declarations.
@@ -202,6 +205,91 @@ func splitTree(path string, src []byte, cfg tsCfg) []Unit {
 		units = append(units, Unit{Kind: "File", File: path, Start: 1, End: len(lines),
 			Text: strings.Join(sk, "\n")})
 	}
+	return units
+}
+
+var shellInterpreters = map[string]bool{
+	"sh": true, "bash": true, "zsh": true, "dash": true, "ksh": true, "ash": true,
+}
+
+// isShellShebang reports whether src opens with a POSIX/bash/zsh shebang line.
+func isShellShebang(src []byte) bool {
+	if len(src) < 3 || src[0] != '#' || src[1] != '!' {
+		return false
+	}
+	line := string(src[:min(len(src), 128)])
+	if nl := strings.IndexByte(line, '\n'); nl >= 0 {
+		line = line[:nl]
+	}
+	fields := strings.Fields(strings.TrimRight(line[2:], "\r"))
+	if len(fields) == 0 {
+		return false
+	}
+	cmd := baseName(fields[0])
+	if cmd == "env" {
+		for _, arg := range fields[1:] {
+			if strings.HasPrefix(arg, "-") || strings.Contains(arg, "=") {
+				continue
+			}
+			cmd = baseName(arg)
+			break
+		}
+	}
+	return shellInterpreters[cmd]
+}
+
+func baseName(p string) string {
+	if i := strings.LastIndexAny(p, `/\`); i >= 0 {
+		return p[i+1:]
+	}
+	return p
+}
+
+func hasShellShebangFile(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var buf [128]byte
+	n, _ := f.Read(buf[:])
+	return isShellShebang(buf[:n])
+}
+
+// shellBodyUnits emits Function units for top-level executable runs outside
+// function definitions, so procedural shell scripts are checked by function rules.
+func shellBodyUnits(root *sitter.Node, path string, lines []string) []Unit {
+	var units []Unit
+	start, end, hasExec := 0, 0, false
+	flush := func() {
+		if hasExec && start > 0 && end >= start {
+			e := min(end, len(lines))
+			units = append(units, Unit{
+				Kind: "Function", File: path, Start: start, End: e,
+				Text: strings.Join(lines[start-1:e], "\n"),
+			})
+		}
+		start, end, hasExec = 0, 0, false
+	}
+	for i, count := 0, int(root.ChildCount()); i < count; i++ {
+		c := root.Child(i)
+		if !c.IsNamed() || strings.Contains(c.Type(), "comment") {
+			continue
+		}
+		if c.Type() == "function_definition" {
+			flush()
+			continue
+		}
+		s, e := int(c.StartPoint().Row)+1, int(c.EndPoint().Row)+1
+		if start == 0 {
+			start = s
+		}
+		end = e
+		if c.Type() != "variable_assignment" {
+			hasExec = true
+		}
+	}
+	flush()
 	return units
 }
 

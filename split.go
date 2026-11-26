@@ -38,15 +38,19 @@ func splitFile(path string, src []byte) []Unit {
 	if key, ok := tsExt[extOf(path)]; ok {
 		return attachTestHelpers(splitTree(path, src, tsLangs[key]))
 	}
+	if extOf(path) == "" && isShellShebang(src) {
+		return attachTestHelpers(splitTree(path, src, tsLangs["sh"]))
+	}
 	return nil
 }
 
 func extOf(path string) string {
-	i := strings.LastIndex(path, ".")
-	if i < 0 {
+	base := baseName(path)
+	i := strings.LastIndex(base, ".")
+	if i <= 0 {
 		return ""
 	}
-	return strings.ToLower(path[i:])
+	return strings.ToLower(base[i:])
 }
 
 func splitGo(path string, src []byte) []Unit {

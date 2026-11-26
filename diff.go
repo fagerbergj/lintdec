@@ -195,7 +195,7 @@ func diffFiles(changes map[string]diffRanges, paths, include, exclude []string) 
 		if err != nil {
 			return nil, err
 		}
-		if !matched || (!explicit && !globsKeep(rel, include, exclude)) {
+		if !matched || (!explicit && !fileSelected(path, rel, include, exclude)) {
 			continue
 		}
 		if st, err := os.Lstat(path); err != nil || !st.Mode().IsRegular() {
@@ -208,11 +208,6 @@ func diffFiles(changes map[string]diffRanges, paths, include, exclude []string) 
 	}
 	slices.Sort(files)
 	return files, nil
-}
-
-// globsKeep: the include and exclude filters pass rel; explicitly named files skip this.
-func globsKeep(rel string, include, exclude []string) bool {
-	return !matchAnyGlob(exclude, rel) && (len(include) == 0 || matchAnyGlob(include, rel))
 }
 
 // checkDiffPaths: every positional path exists or is a glob that matches a repository file.
