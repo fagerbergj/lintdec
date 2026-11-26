@@ -118,18 +118,31 @@ func (p *progress) endFile(file string) {
 	}
 }
 
+func (p *progress) callsPerSec() float64 {
+	if p.calls == 0 {
+		return 0
+	}
+	elapsed := time.Since(p.start).Seconds()
+	if elapsed <= 0 {
+		return 0
+	}
+	return float64(p.calls) / elapsed
+}
+
 func (p *progress) rate() string {
-	if p.emaSec <= 0 {
+	r := p.callsPerSec()
+	if r <= 0 {
 		return "—"
 	}
-	return formatRate(1 / p.emaSec)
+	return formatRate(r)
 }
 
 func (p *progress) eta() string {
-	if p.emaSec <= 0 {
+	r := p.callsPerSec()
+	if r <= 0 {
 		return "—"
 	}
-	return formatDuration(float64(max(p.total-p.done, 0)) * p.emaSec)
+	return formatDuration(float64(max(p.total-p.done, 0)) / r)
 }
 
 func (p *progress) lines(width int, color bool) []string {

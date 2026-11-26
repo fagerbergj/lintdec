@@ -239,15 +239,17 @@ func TestSystemOneCallAndHealth(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Errorf("bad request body: %v", err)
 			}
-			if !strings.Contains(body.State, "TODO: fix") || len(body.Questions) != 2 {
-				t.Errorf("unexpected systemone payload: %+v", body)
+			if !strings.Contains(body.State, "TODO: fix") || len(body.Questions) != 1 {
+				t.Errorf("want 1 rule per systemone call, got: %+v", body)
+			}
+			scores := map[string]float64{"comment-long": 0.12, "todo-no-owner": 0.93}
+			answers := map[string]any{}
+			for id := range body.Questions {
+				answers[id] = map[string]any{"type": "noul", "noul": scores[id]}
 			}
 			json.NewEncoder(w).Encode(map[string]any{
-				"model": "strands-decider-12B-gemma4-v1-2610",
-				"answers": map[string]any{
-					"comment-long":  map[string]any{"type": "noul", "noul": 0.12},
-					"todo-no-owner": map[string]any{"type": "noul", "noul": 0.93},
-				},
+				"model":   "strands-decider-12B-gemma4-v1-2610",
+				"answers": answers,
 			})
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -274,5 +276,47 @@ func TestSystemOneCallAndHealth(t *testing.T) {
 	v := got["todo-no-owner"]
 	if !v.Lint || v.Severity != "high" || v.Confidence != 0.93 || v.Reason != r2.Summary {
 		t.Errorf("unexpected todo-no-owner verdict: %+v", v)
+	}
+}
+
+func TestSystemOneCacheReusesAcrossThresholds(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		json.NewEncoder(w).Encode(map[string]any{
+			"model": "clef",
+			"answers": map[string]any{
+				"todo-no-owner": map[string]any{"type": "noul", "noul": 0.80},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	r, _ := findRule("todo-no-owner")
+	u := Unit{Kind: "Comment", File: "a.go", Start: 1, End: 1, Text: "// TODO: fix"}
+	jobs := []job{{unit: u, rules: []Rule{r}}}
+	ch := &cache{dir: t.TempDir(), on: true}
+	lines := map[string][]string{"a.go": {"// TODO: fix"}}
+
+	cl75 := &client{base: srv.URL, protocol: "systemone", model: "clef", threshold: 0.75, calibrate: true, httpc: srv.Client()}
+	res75 := runPool(context.Background(), jobs, lintOpts{workers: 1, quiet: true}, cl75, ch, newProgress(1, true), lines, nil)
+	if len(res75.findings) != 1 || calls.Load() != 1 {
+		t.Fatalf("at 0.75: findings=%d calls=%d, want 1/1", len(res75.findings), calls.Load())
+	}
+
+	cl85 := &client{base: srv.URL, protocol: "systemone", model: "clef", threshold: 0.85, calibrate: true, httpc: srv.Client()}
+	res85 := runPool(context.Background(), jobs, lintOpts{workers: 1, quiet: true}, cl85, ch, newProgress(1, true), lines, nil)
+	if len(res85.findings) != 0 || calls.Load() != 1 {
+		t.Fatalf("at 0.85: findings=%d calls=%d, want 0/1 (must hit cache)", len(res85.findings), calls.Load())
+	}
+}
+
+func TestParseVerdictsSkipsEarlierProseBraces(t *testing.T) {
+	r, _ := findRule("comment-long")
+	j := job{unit: Unit{Kind: "Comment", File: "a.go", Start: 1, End: 1}, rules: []Rule{r}}
+	raw := "Checking {example} in prose before JSON:\n{\"comment-long\":{\"lint\":false}}"
+	got, missing, err := parseVerdicts(raw, j)
+	if err != nil || len(missing) != 0 || got["comment-long"].Lint {
+		t.Fatalf("parseVerdicts failed with prose braces: got=%+v missing=%v err=%v", got, missing, err)
 	}
 }

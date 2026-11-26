@@ -17,17 +17,18 @@ type Rule struct {
 	Source  string // catalogue id, source, quote, URL: the published rule this one enforces
 }
 
-// promptVersion folds the system prompt and every rubric into one hash; the
-// cache key carries it, so any prompt or rubric edit invalidates stale
-// verdicts automatically.
-var promptVersion = func() string {
+// ruleVersion folds the system prompt and one rule's rubric and veto into a
+// hash so editing a single rule invalidates only that rule's cached verdicts.
+func ruleVersion(id string) string {
 	h := sha256.New()
 	h.Write([]byte(systemPrompt))
-	for _, r := range rules {
-		h.Write([]byte(r.ID + "\x00" + r.Rubric + "\x00" + r.Scope + "\x00" + ruleVetoes[r.ID]))
+	if r, ok := findRule(id); ok {
+		h.Write([]byte("\x00" + r.ID + "\x00" + r.Summary + "\x00" + r.Rubric + "\x00" + r.Scope + "\x00" + ruleVetoes[r.ID]))
+	} else {
+		h.Write([]byte("\x00" + id))
 	}
 	return hex.EncodeToString(h.Sum(nil))
-}()
+}
 
 var rules = []Rule{
 	{"flakey-test", "test relies on timing or scheduling", []string{"TestFunction"}, "local",
