@@ -439,7 +439,7 @@ func canMergeComment(a, b *sitter.Node, lines []string, src []byte) bool {
 
 func isDirectiveComment(n *sitter.Node, src []byte) bool {
 	t := strings.TrimSpace(commentMarker.ReplaceAllString(n.Content(src), ""))
-	return toolDirective.MatchString(t)
+	return isToolDirective(t)
 }
 
 func isCommentOnlyLine(lines []string, row, col int) bool {

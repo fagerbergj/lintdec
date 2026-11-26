@@ -106,7 +106,7 @@ def load_manifest(path: str) -> object:
 
 def matches_file(finding_file: str, suffix: str) -> bool:
     norm = finding_file.replace("\\", "/")
-    want = suffix.replace("\\", "/").lstrip("/")
+    want = suffix.replace("\\", "/").removeprefix("./").lstrip("/")
     return norm == want or norm.endswith("/" + want)
 
 

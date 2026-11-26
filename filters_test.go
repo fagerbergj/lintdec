@@ -68,6 +68,8 @@ func TestRuleEligibleDeterministicFilters(t *testing.T) {
 		{"test-shared-state", Unit{Kind: "TestFunction", Text: "process.env[\"FEATURE_X\"] = \"1\""}, true},
 		{"test-shared-state", Unit{Kind: "TestFunction", Text: "delete process.env.API_KEY"}, true},
 		{"test-shared-state", Unit{Kind: "TestFunction", Text: "os.environ[\"HOME\"] = \"/tmp/x\""}, true},
+		{"test-shared-state", Unit{Kind: "TestFunction", Text: "os.environ[\"PATH\"] += \":/opt/bin\""}, true},
+		{"test-shared-state", Unit{Kind: "TestFunction", Text: "del os.environ[\"HOME\"]"}, true},
 		{"test-shared-state", Unit{Kind: "TestFunction", Text: "monkeypatch.setenv('A', '1')"}, true},
 		{"test-shared-state", Unit{Kind: "TestFunction", Text: "const key = process.env.API_KEY"}, false},
 		{"test-shared-state", Unit{Kind: "TestFunction", Text: "if (process.env.CI === 'true') return;"}, false},

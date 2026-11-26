@@ -30,8 +30,10 @@ func TestFilterCommentsReKindsSuppressions(t *testing.T) {
 	in := []Unit{
 		{Kind: "Comment", Text: "// ----"},
 		{Kind: "Comment", Text: "//go:embed foo"},
+		{Kind: "Comment", Text: "# rubocop:enable Metrics/AbcSize"},
 		{Kind: "Comment", Text: "// eslint-disable-next-line no-any"},
 		{Kind: "Comment", Text: "// @ts-expect-error legacy wire payload"},
+		{Kind: "Comment", Text: "// NOLINTNEXTLINE(bugprone-branch-clone)"},
 		{Kind: "Comment", Text: "# ruff: noqa: E501"},
 		{Kind: "Comment", Text: "# flake8: noqa"},
 		{Kind: "Comment", Text: "#pragma warning disable CA1303"},
@@ -47,18 +49,35 @@ func TestFilterCommentsReKindsSuppressions(t *testing.T) {
 		{Kind: "Comment", Text: "// Normal explanation comment."},
 	}
 	got := filterComments(in)
-	if len(got) != 15 {
-		t.Fatalf("want 15 surviving units (8 Directive + 7 Comment), got %d: %+v", len(got), got)
+	if len(got) != 16 {
+		t.Fatalf("want 16 surviving units (9 Directive + 7 Comment), got %d: %+v", len(got), got)
 	}
-	for i := range 8 {
+	for i := range 9 {
 		if got[i].Kind != "Directive" {
 			t.Fatalf("got[%d] = %s (%q), want Directive", i, got[i].Kind, got[i].Text)
 		}
 	}
-	for i := 8; i < len(got); i++ {
+	for i := 9; i < len(got); i++ {
 		if got[i].Kind != "Comment" {
 			t.Fatalf("prose comment got[%d] = %s (%q), want Comment", i, got[i].Kind, got[i].Text)
 		}
+	}
+}
+
+func TestDirectiveCommentDoesNotMergeWithAdjacentProse(t *testing.T) {
+	src := "# flake8: noqa\n# This helper explains the surrounding logic in more than five words.\ndef f():\n    return 1\n"
+	units := filterComments(splitFile("sample.py", []byte(src)))
+	var hasDir, hasComment bool
+	for _, u := range units {
+		if u.Kind == "Directive" && strings.Contains(u.Text, "flake8: noqa") {
+			hasDir = true
+		}
+		if u.Kind == "Comment" && strings.Contains(u.Text, "explains the surrounding logic") {
+			hasComment = true
+		}
+	}
+	if !hasDir || !hasComment {
+		t.Fatalf("expected separate Directive and Comment units, got: %+v", units)
 	}
 }
 

@@ -567,10 +567,15 @@ func digestFor(u Unit, lines []string) string {
 var (
 	commentMarker        = regexp.MustCompile(`^\s*(//+|#+|/\*+|\*+/?|--|;+|<!--|\{\s*/\*+)\s?`)
 	ruleLine             = regexp.MustCompile(`^[^\p{L}\p{N}]{3,}$`)
-	toolDirective        = regexp.MustCompile(`^(?:shellcheck|eslint|prettier-ignore|@ts-|nolint|noqa|go:\S|lint:\S|lintdec:ignore|pylint|type:\s*ignore|istanbul|c8 |biome-ignore|ktlint|tslint|jshint|NOSONAR|region|endregion)`)
-	toolDirectiveCI      = regexp.MustCompile(`(?i)^(?:ruff:\s*noqa|flake8:\s*noqa|pragma\s+warning\s+disable|markdownlint-disable|rubocop:disable)`)
-	suppressionDirective = regexp.MustCompile(`^(?:eslint-disable|@ts-ignore|@ts-expect-error|nolint|noqa|type:\s*ignore|biome-ignore|pylint:\s*disable|ktlint-disable|NOSONAR|istanbul ignore|c8 ignore|shellcheck disable)`)
+	toolDirective        = regexp.MustCompile(`^(?:shellcheck|eslint|prettier-ignore|@ts-|nolint|NOLINT|noqa|go:\S|lint:\S|lintdec:ignore|pylint|type:\s*ignore|istanbul|c8 |biome-ignore|ktlint|tslint|jshint|NOSONAR|region|endregion)`)
+	toolDirectiveAnyCase = regexp.MustCompile(`(?i)^(?:ruff:\s*noqa|flake8:\s*noqa|pragma\s+warning\s+disable|markdownlint-disable|rubocop:(?:disable|enable))`)
+	suppressionDirective = regexp.MustCompile(`^(?:eslint-disable|@ts-ignore|@ts-expect-error|nolint|NOLINT|noqa|type:\s*ignore|biome-ignore|pylint:\s*disable|ktlint-disable|NOSONAR|istanbul ignore|c8 ignore|shellcheck disable)`)
+	suppressionAnyCase   = regexp.MustCompile(`(?i)^(?:ruff:\s*noqa|flake8:\s*noqa|pragma\s+warning\s+disable|markdownlint-disable|rubocop:disable)`)
 )
+
+func isToolDirective(t string) bool {
+	return toolDirective.MatchString(t) || toolDirectiveAnyCase.MatchString(t)
+}
 
 func isSuppressionComment(u Unit) bool {
 	if u.Kind != "Comment" {
@@ -578,7 +583,7 @@ func isSuppressionComment(u Unit) bool {
 	}
 	for line := range strings.SplitSeq(u.Text, "\n") {
 		t := strings.TrimSpace(commentMarker.ReplaceAllString(line, ""))
-		if suppressionDirective.MatchString(t) || toolDirectiveCI.MatchString(t) {
+		if suppressionDirective.MatchString(t) || suppressionAnyCase.MatchString(t) {
 			return true
 		}
 	}
@@ -614,7 +619,7 @@ func structuralComment(u Unit) bool {
 		switch {
 		case t == "" || ruleLine.MatchString(t):
 			rules++
-		case toolDirective.MatchString(t) || toolDirectiveCI.MatchString(t):
+		case isToolDirective(t):
 			directives++
 		case len(strings.Fields(t)) <= 5:
 			titles++
