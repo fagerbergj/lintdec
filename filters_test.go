@@ -81,6 +81,17 @@ func TestRuleEligibleDeterministicFilters(t *testing.T) {
 		{"md-no-remediation", Unit{Kind: "Section", Text: "## Error 503 on startup\n\nLogs error."}, true},
 		{"md-no-remediation", Unit{Kind: "Section", Text: "##### Known issues\n\nFails on arm64."}, true},
 		{"md-no-remediation", Unit{Kind: "Section", Text: "## Installation\n\nRun npm ci."}, false},
+
+		{"unbounded-retry", Unit{Kind: "Function", Text: "func fetch() { for { resp, err := get(); if err == nil { return } } }"}, true},
+		{"unbounded-retry", Unit{Kind: "Function", Text: "function call(maxRetries: number) { return retry(call); }"}, true},
+		{"unbounded-retry", Unit{Kind: "Function", Text: "func add(a, b int) int { return a + b }"}, false},
+
+		{"hand-rolled-stdlib", Unit{Kind: "Function", Start: 1, End: 12, Text: "function parseQueryString(raw) {\n  // manual split\n}"}, true},
+		{"hand-rolled-stdlib", Unit{Kind: "Function", Start: 1, End: 4, Text: "function parseQueryString(raw) { return new URLSearchParams(raw); }"}, false},
+		{"hand-rolled-stdlib", Unit{Kind: "Function", Start: 1, End: 15, Text: "function sumPrices(items) {\n  let n = 0;\n  return n;\n}"}, false},
+
+		{"lint-config-weakened", Unit{Kind: "LintConfig", Text: `{"rules": {"no-unused-vars": "off"}}`}, true},
+		{"lint-config-weakened", Unit{Kind: "LintConfig", Text: `{"rules": {"no-unused-vars": "error"}}`}, false},
 	}
 	for _, c := range cases {
 		r, ok := findRule(c.rule)

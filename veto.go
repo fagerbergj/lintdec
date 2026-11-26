@@ -41,8 +41,11 @@ var ruleVetoes = map[string]string{
 	"test-ignored-no-reason":    "Is the test in TARGET skipped only conditionally for a runtime environment requirement (such as OS, missing optional credential, or short mode) or tied to a named issue or ticket?",
 	"test-over-mocked":          "Do the mocks or fakes in TARGET only replace external boundaries (such as network, filesystem, clock, or third-party services) while exercising real production logic and asserting real outcomes?",
 	"test-shared-state":         "Does the test in TARGET isolate every file, port, or environment change (using a temp directory helper, ephemeral port, or explicit restore/cleanup) so it cannot leak into sibling tests?",
-	"suppression-no-reason":     "Does the suppression comment in TARGET (or an immediately adjacent comment in CONTEXT) state a concrete technical reason why the disabled check does not apply or why the bypass is safe?",
+	"suppression-no-reason":     "Is there a substantive explanatory comment either on the TARGET directive line itself or on the line immediately above TARGET in SURROUNDING CONTEXT (giving a concrete reason, rather than a bare directive or tautology like \"fix error\")?",
 	"md-no-remediation":         "Does the section in TARGET either give concrete steps to fix or work around the failure, include a fenced code block placeholder (such as [sh code block] or [code block]) introduced by prose naming an action or fix the reader applies, link directly to remediation steps, or explicitly explain that no user action is required?",
+	"unbounded-retry":           "Does the retry logic in TARGET cap the number of attempts and back off or delegate to a retry helper, OR is TARGET a pagination, polling, worker, or config-builder function rather than retrying failed attempts in an unbounded loop?",
+	"hand-rolled-stdlib":        "Does TARGET call a standard library primitive to do the core parsing, encoding, or formatting, OR does a comment in TARGET or CONTEXT explicitly explain why the standard library cannot be used here (such as a documented minimal subset, hot-path allocation constraint, or zero-dependency requirement)?",
+	"lint-config-weakened":      "Is every disabled rule, warning-only rule, or excluded path in TARGET either standard build/generated/fixture output (such as dist, build, .next, fixtures, node_modules), scoped to tests or stories, or accompanied by a comment explaining the technical reason?",
 }
 
 // ruleFloors: tuned per rule on labeled findings, with 30% of files held out; unlisted rules need 0.75.
@@ -70,6 +73,7 @@ var defaultOff = map[string]bool{
 	"md-one-sided-alternatives": true, "md-one-topic": true, "md-rfc-no-ask": true, "md-two-names": true,
 	"md-topic-sentence": true, "md-adr-many-decisions": true, "md-adr-no-cost": true,
 	"test-ignored-no-reason": true, "test-over-mocked": true, "md-no-remediation": true,
+	"unbounded-retry": true, "hand-rolled-stdlib": true, "lint-config-weakened": true,
 }
 
 func ruleFloor(id string) float64 {

@@ -81,6 +81,51 @@ func TestDirectiveCommentDoesNotMergeWithAdjacentProse(t *testing.T) {
 	}
 }
 
+func TestDirectiveIncludesPrecedingRationaleComment(t *testing.T) {
+	src := "#!/usr/bin/env bash\n# Splitting $EXTRA into separate CLI flags is intentional.\n# shellcheck disable=SC2206\n[ -n \"${EXTRA:-}\" ] && ARGS+=($EXTRA)\n"
+	units := filterComments(splitFile("run.sh", []byte(src)))
+	var dir Unit
+	var hasComment bool
+	for _, u := range units {
+		if u.Kind == "Directive" {
+			dir = u
+		}
+		if u.Kind == "Comment" && strings.Contains(u.Text, "Splitting $EXTRA") {
+			hasComment = true
+		}
+	}
+	if dir.Kind != "Directive" || dir.Start != 3 || !strings.Contains(dir.Text, "Splitting $EXTRA") || !strings.Contains(dir.Text, "SC2206") {
+		t.Fatalf("expected Directive anchored at line 3 with preceding rationale, got: %+v", dir)
+	}
+	if !hasComment {
+		t.Fatalf("expected preceding prose comment to remain lintable as Comment: %+v", units)
+	}
+}
+
+func TestSplitFileLintConfig(t *testing.T) {
+	for path, want := range map[string]bool{
+		"eslint.config.mjs":              true,
+		"sub/.eslintrc.json":             true,
+		"biome.json":                     true,
+		"ruff.toml":                      true,
+		".golangci.yml":                  true,
+		"lintdec.yaml":                   true,
+		".github/workflows/lintdec.yaml": false,
+		"main.go":                        false,
+	} {
+		if got := isLintConfig(path); got != want {
+			t.Errorf("isLintConfig(%q) = %v, want %v", path, got, want)
+		}
+	}
+	units := splitFile("eslint.config.mjs", []byte("export default [{ rules: { 'no-unused-vars': 'off' } }];\n"))
+	if len(units) != 1 || units[0].Kind != "LintConfig" || units[0].Start != 1 || units[0].End != 1 {
+		t.Fatalf("expected single LintConfig unit, got %+v", units)
+	}
+	if empty := splitFile("lintdec.yaml", []byte("   \n")); empty != nil {
+		t.Fatalf("expected nil for blank lint config, got %+v", empty)
+	}
+}
+
 func TestPlaceholderBody(t *testing.T) {
 	cases := map[string]bool{
 		"<!-- list channels -->":                   true,

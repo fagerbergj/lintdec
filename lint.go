@@ -88,10 +88,13 @@ func commonAncestor(a, b string) (string, bool) {
 
 // defaultInclude returns globs for every language splitFile understands.
 func defaultInclude() []string {
-	out := make([]string, 0, len(tsExt)+3)
+	out := make([]string, 0, len(tsExt)+len(lintConfigNames)+3)
 	out = append(out, "*.go", "*.md", "*.markdown")
 	for ext := range tsExt {
 		out = append(out, "*"+ext)
+	}
+	for name := range lintConfigNames {
+		out = append(out, name)
 	}
 	slices.Sort(out)
 	return out

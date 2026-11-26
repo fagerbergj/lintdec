@@ -176,14 +176,24 @@ var rules = []Rule{
 	{"md-no-remediation", "error or troubleshooting section omits how to fix it", []string{"Section"}, "whole",
 		"The troubleshooting, warning, or error section describes a failure or symptom without stating a concrete remediation step, workaround, or diagnostic action the reader can take.",
 		"OpenSSF Scorecard Check Docs & Google Tricorder: error and check docs must pair each failure with actionable remediation steps https://github.com/ossf/scorecard/blob/main/docs/checks.md"},
+	{"unbounded-retry", "retry loop lacks cap, backoff, or error classification", []string{"Function", "Script"}, "whole",
+		"The retry logic retries an operation without bounding the number of attempts, without backing off between retries, or without distinguishing transient failures from permanent ones.",
+		"Stoica et al., SOSP 2024, Analyzing Retry Incidents in Cloud Systems: unbounded or unclassified retries cause retry storms and cascading failures https://jonathanmace.github.io/papers/stoica2024retry.pdf"},
+	{"hand-rolled-stdlib", "function hand-rolls a standard library primitive", []string{"Function"}, "whole",
+		"The function reimplements standard parsing, encoding, escaping, formatting, or utility logic (such as CSV, URL/query strings, Base64, UUID, HTML escaping, ISO-8601 dates, CLI flags, or deep equality) that the language's standard library already provides safely.",
+		"Go modernize & Ruff FURB: hand-rolled reimplementations of standard library primitives miss edge cases and add maintenance burden https://pkg.go.dev/golang.org/x/tools/go/analysis/passes/modernize"},
+	{"lint-config-weakened", "linter config weakens rules or excludes code without rationale", []string{"LintConfig"}, "whole",
+		"The linter configuration disables or downgrades correctness or maintainability rules globally, or excludes production source directories, without scoping the relaxation to tests or generated output or stating a concrete technical rationale.",
+		"Google SWE Book, Ch. 20 Static Analysis & ESLint Rules Docs: permanent warning downgrades and unexplained exclusions silently hide defects https://abseil.io/resources/swe-book/html/ch20.html"},
 }
 
 // ruleLevel: each rule's fixed severity. Jev's score only decides whether a finding is reported.
 var ruleLevel = map[string]string{
 	"swallowed-error": "error", "flakey-test": "error",
-	"tautology-test": "error", "test-shared-state": "error",
+	"tautology-test": "error", "test-shared-state": "error", "unbounded-retry": "error",
 	"comment-contradicts-code": "warning", "name-mismatch": "warning", "stub-body": "warning", "incomplete-assertion": "warning", "iface-leaky": "warning",
 	"test-ignored-no-reason": "warning", "test-over-mocked": "warning", "suppression-no-reason": "warning",
+	"hand-rolled-stdlib": "warning", "lint-config-weakened": "warning",
 	"iface-god-method": "warning", "file-several-jobs": "warning",
 	"comment-long": "info", "comment-tautology": "info", "comment-hedge": "info",
 	"comment-excuse": "info", "comment-history": "info", "todo-no-owner": "info",

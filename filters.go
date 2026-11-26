@@ -8,18 +8,21 @@ import (
 // Deterministic pre-filters skip model calls when a rule's trigger is absent;
 // each proxy is chosen to preserve that trigger without altering batching or cache keys.
 var (
-	todoTagRe         = regexp.MustCompile(`(?i)(?:^|[^-\w])(?:TODO|FIXME|HACK|XXX)(?:[^-\w]|$)`)
-	listConjRe        = regexp.MustCompile(`(?i)\b(?:and|or)\b`)
-	readerRefRe       = regexp.MustCompile(`(?i)\b(?:you|your|you're|you've|yourself|user|users|reader|readers)\b`)
-	altRefRe          = regexp.MustCompile(`(?i)\b(?:alternatives?|options?|considered|rejected|instead of|vs\.?|versus|trade-?offs?)\b`)
-	adrPathTitleRe    = regexp.MustCompile(`(?i)\b(?:adrs?|decisions?)\b`)
-	adrHeadingRe      = regexp.MustCompile(`(?im)^#{1,3}\s+(?:status|context|decision|consequences|trade-?offs?)\b`)
-	rfcPathTitleRe    = regexp.MustCompile(`(?i)\b(?:rfcs?|rfds?|proposals?|design)\b`)
-	rfcHeadingRe      = regexp.MustCompile(`(?im)^#{1,3}\s+(?:proposal|motivation|proposed change|detailed design|design)\b`)
-	testSkipRe        = regexp.MustCompile(`(?i)(?:^|[^-\w])(?:t\.Skip\w*|test\.skip|it\.skip|describe\.skip|xit|xtest|@Disabled|@Ignore|@pytest\.mark\.skip|unittest\.skip)(?:[^-\w]|$)`)
-	testMockRe        = regexp.MustCompile(`(?i)\b(?:vi\.fn|vi\.mock|vi\.spyOn|jest\.fn|jest\.mock|jest\.spyOn|MagicMock|create_autospec|sinon\.|gomock|mockk|Mockito|unittest\.mock)\b|\bpatch\s*\(`)
-	testSharedStateRe = regexp.MustCompile(`(?i)(?:os\.(?:Set|Unset)env|process\.env\.\w+\s*=\s*[^=\s]|process\.env\[[^\]]+\]\s*=\s*[^=\s]|delete\s+process\.env|os\.environ\[[^\]]+\]\s*\+?=[^=]|del\s+os\.environ|monkeypatch\.setenv|os\.Chdir|process\.chdir|(?:/tmp/|localhost:\d|127\.0\.0\.1:\d)|(?:os\.)?writeFile(?:Sync)?\s*\(\s*["'` + "`" + `])`)
-	remediationHeadRe = regexp.MustCompile(`(?i)^#{1,6}\s+.*(?:troubleshoot|error|warning|failure|debug|known issues|faq|caveat)`)
+	todoTagRe          = regexp.MustCompile(`(?i)(?:^|[^-\w])(?:TODO|FIXME|HACK|XXX)(?:[^-\w]|$)`)
+	listConjRe         = regexp.MustCompile(`(?i)\b(?:and|or)\b`)
+	readerRefRe        = regexp.MustCompile(`(?i)\b(?:you|your|you're|you've|yourself|user|users|reader|readers)\b`)
+	altRefRe           = regexp.MustCompile(`(?i)\b(?:alternatives?|options?|considered|rejected|instead of|vs\.?|versus|trade-?offs?)\b`)
+	adrPathTitleRe     = regexp.MustCompile(`(?i)\b(?:adrs?|decisions?)\b`)
+	adrHeadingRe       = regexp.MustCompile(`(?im)^#{1,3}\s+(?:status|context|decision|consequences|trade-?offs?)\b`)
+	rfcPathTitleRe     = regexp.MustCompile(`(?i)\b(?:rfcs?|rfds?|proposals?|design)\b`)
+	rfcHeadingRe       = regexp.MustCompile(`(?im)^#{1,3}\s+(?:proposal|motivation|proposed change|detailed design|design)\b`)
+	testSkipRe         = regexp.MustCompile(`(?i)(?:^|[^-\w])(?:t\.Skip\w*|test\.skip|it\.skip|describe\.skip|xit|xtest|@Disabled|@Ignore|@pytest\.mark\.skip|unittest\.skip)(?:[^-\w]|$)`)
+	testMockRe         = regexp.MustCompile(`(?i)\b(?:vi\.fn|vi\.mock|vi\.spyOn|jest\.fn|jest\.mock|jest\.spyOn|MagicMock|create_autospec|sinon\.|gomock|mockk|Mockito|unittest\.mock)\b|\bpatch\s*\(`)
+	testSharedStateRe  = regexp.MustCompile(`(?i)(?:os\.(?:Set|Unset)env|process\.env\.\w+\s*=\s*[^=\s]|process\.env\[[^\]]+\]\s*=\s*[^=\s]|delete\s+process\.env|os\.environ\[[^\]]+\]\s*\+?=[^=]|del\s+os\.environ|monkeypatch\.setenv|os\.Chdir|process\.chdir|(?:/tmp/|localhost:\d|127\.0\.0\.1:\d)|(?:os\.)?writeFile(?:Sync)?\s*\(\s*["'` + "`" + `])`)
+	remediationHeadRe  = regexp.MustCompile(`(?i)^#{1,6}\s+.*(?:troubleshoot|error|warning|failure|debug|known issues|faq|caveat)`)
+	retryRe            = regexp.MustCompile(`(?i)\b(?:retry|retries|retried|backoff|maxRetries|maxAttempts|retryCount|retryDelay)\b|\bfor\s*\{|\bwhile\s*\(\s*(?:true|1)\s*\)|\bwhile\s+True\s*:`)
+	handRolledStdlibRe = regexp.MustCompile(`(?i)(?:base64|uuid|guid|csv|urlencode|querystring|query_?string|parse_?query|escape_?html|unescape_?html|html_?escape|parse_?iso|iso_?8601|deep_?equal|parse_?args|parse_?flags|os\.Args|process\.argv|sys\.argv|0123456789abcdef|ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789|&amp;|&lt;|&gt;)`)
+	lintConfigWeakRe   = regexp.MustCompile(`(?i)(?:\boff\b|\bwarn\b|\bdisable\b|\bignore\b|\bignores\b|\bexclude\b|\bexclusions\b|no-?check)`)
 )
 
 // ruleFilters maps rule IDs to deterministic pre-filters; suppression-no-reason filters by construction via Directive kind.
@@ -38,6 +41,9 @@ var ruleFilters = map[string]func(Unit) bool{
 	"test-over-mocked":          func(u Unit) bool { return testMockRe.MatchString(u.Text) },
 	"test-shared-state":         func(u Unit) bool { return testSharedStateRe.MatchString(u.Text) },
 	"md-no-remediation":         func(u Unit) bool { return remediationHeadRe.MatchString(firstNonEmptyLine(u.Text)) },
+	"unbounded-retry":           func(u Unit) bool { return retryRe.MatchString(u.Text) },
+	"hand-rolled-stdlib":        func(u Unit) bool { return u.End-u.Start+1 >= 8 && handRolledStdlibRe.MatchString(u.Text) },
+	"lint-config-weakened":      func(u Unit) bool { return lintConfigWeakRe.MatchString(u.Text) },
 }
 
 func ruleEligible(r Rule, u Unit) bool {
