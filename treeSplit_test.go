@@ -217,6 +217,54 @@ test('does not call helpers', () => {
 	if strings.Contains(tests[1].Context, "clock.advance(500)") {
 		t.Errorf("method call obj.within should not attach top-level helper:\n%s", tests[1].Context)
 	}
+
+	// Go test file: top-level helper attached, receiver method skipped.
+	goSrc := `package p
+type clock struct{}
+func (c *clock) advance() {}
+func fakeWait() { println("fake") }
+func TestRun(t *testing.T) { fakeWait() }
+`
+	for _, u := range splitFile("run_test.go", []byte(goSrc)) {
+		if u.Kind == "TestFunction" {
+			if !strings.Contains(u.Context, "4\tfunc fakeWait()") || strings.Contains(u.Context, "advance") {
+				t.Errorf("Go test helper context wrong:\n%s", u.Context)
+			}
+		}
+	}
+
+	// Budget caps: >30-line helper skipped; total helper context capped at 50 lines.
+	body := strings.Repeat("  const x = 1;\n", 26)
+	capSrc := "function hOne() {\n" + body + "}\nfunction hTwo() {\n" + body + "}\nfunction huge() {\n" + strings.Repeat("  const y = 2;\n", 31) + "}\ntest('caps', () => { hOne(); hTwo(); huge(); });\n"
+	for _, u := range splitFile("caps.test.ts", []byte(capSrc)) {
+		if u.Kind == "TestFunction" {
+			if !strings.Contains(u.Context, "function hOne") || strings.Contains(u.Context, "function hTwo") || strings.Contains(u.Context, "function huge") {
+				t.Errorf("helper caps not enforced:\n%s", u.Context)
+			}
+		}
+	}
+}
+
+func TestTrailingCommentsKeepNearbyContext(t *testing.T) {
+	tsSrc := `const ROUTES = [
+  ['GET', '/a'],
+]; // one entry per route
+export function demo() { return 1; }
+`
+	for _, u := range splitTree("routes.ts", []byte(tsSrc), tsLangs["ts"]) {
+		if u.Kind == "Comment" {
+			if !strings.Contains(u.Context, "const ROUTES") {
+				t.Errorf("trailing TS comment lost the declaration it trails:\n%s", u.Context)
+			}
+		}
+	}
+
+	goSrc := "package p\nconst x = 1\nfunc f() {} // short trailing note\n"
+	for _, u := range splitGo("trail.go", []byte(goSrc)) {
+		if u.Kind == "Comment" && strings.TrimSpace(u.Context) == "" {
+			t.Errorf("single-line Go trailing comment got empty context")
+		}
+	}
 }
 
 func TestSplitGoFunctionSeesItsDocComment(t *testing.T) {

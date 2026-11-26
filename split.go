@@ -21,6 +21,7 @@ type Unit struct {
 	Text         string
 	Context      string
 	ContextStart int
+	name         string // declared function name for top-level helper lookup (not cached)
 }
 
 // rawBudgetLines: units at or below this go to the model verbatim; above it,
@@ -79,6 +80,7 @@ func splitGo(path string, src []byte) []Unit {
 				end = d.Body.End()
 			}
 			add(kind, d.Pos(), end, "")
+			units[len(units)-1].name = goTopFuncName(d)
 			if d.Doc != nil {
 				units[len(units)-1].ContextStart = fset.Position(d.Doc.Pos()).Line
 				units[len(units)-1].Context = strings.TrimSpace(d.Doc.Text())
@@ -103,6 +105,13 @@ func splitGo(path string, src []byte) []Unit {
 		add("Comment", g.Pos(), g.End(), goCommentContext(fset, f, lines, g))
 	}
 	return units
+}
+
+func goTopFuncName(d *ast.FuncDecl) string {
+	if d.Recv != nil {
+		return ""
+	}
+	return d.Name.Name
 }
 
 // goSkeleton: one unit per Go file listing declarations with line numbers.
@@ -140,18 +149,19 @@ func goCommentContext(fset *token.FileSet, f *ast.File, lines []string, g *ast.C
 		}
 		ds, de := fset.Position(start).Line, min(fset.Position(d.End()).Line, len(lines))
 		if ds <= s && e <= de && de-ds <= rawBudgetLines {
-			return numberedContext(lines, ds, de, s, e)
+			if ctx := numberedContext(lines, ds, de, s, e); ctx != "" {
+				return ctx
+			}
 		}
 	}
 	return commentContext(lines, s, e)
 }
 
+// Bounds on same-file helper bodies attached to a TestFunction's Context.
 const (
 	maxTestHelperLines = 30
 	maxTestHelperTotal = 50
 )
-
-var helperDeclRe = regexp.MustCompile(`^(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:func|function|def|fn|const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)\b`)
 
 type testHelper struct {
 	name  string
@@ -167,10 +177,9 @@ func attachTestHelpers(units []Unit) []Unit {
 	for _, u := range units {
 		if u.Kind == "TestFunction" {
 			hasTest = true
-		} else if u.Kind == "Function" && u.End-u.Start+1 <= maxTestHelperLines {
-			if name := helperDeclName(u.Text); len(name) >= 3 {
-				helpers = append(helpers, testHelper{name: name, lines: u.End - u.Start + 1, text: u.Text})
-			}
+		} else if u.Kind == "Function" && u.End-u.Start+1 <= maxTestHelperLines && len(u.name) >= 3 {
+			// skip 1-2 char names (e.g. f, fn) that collide with local variables
+			helpers = append(helpers, testHelper{name: u.name, lines: u.End - u.Start + 1, text: numberedLines(u.Text, u.Start)})
 		}
 	}
 	if !hasTest || len(helpers) == 0 {
@@ -188,7 +197,7 @@ func appendHelperContext(u *Unit, helpers []testHelper) {
 	var refs []string
 	used := 0
 	for _, h := range helpers {
-		if used+h.lines > maxTestHelperTotal || !callsHelper(u.Text, h.name) {
+		if !callsHelper(u.Text, h.name) || used+h.lines > maxTestHelperTotal {
 			continue
 		}
 		refs = append(refs, h.text)
@@ -205,12 +214,13 @@ func appendHelperContext(u *Unit, helpers []testHelper) {
 	}
 }
 
-func helperDeclName(text string) string {
-	first := strings.TrimSpace(strings.SplitN(text, "\n", 2)[0])
-	if m := helperDeclRe.FindStringSubmatch(first); len(m) == 2 {
-		return m[1]
+func numberedLines(text string, start int) string {
+	ls := strings.Split(text, "\n")
+	out := make([]string, len(ls))
+	for i, l := range ls {
+		out[i] = fmt.Sprintf("%d\t%s", start+i, l)
 	}
-	return ""
+	return strings.Join(out, "\n")
 }
 
 func callsHelper(body, name string) bool {
