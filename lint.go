@@ -681,10 +681,13 @@ func resolveGlobs(o lintOpts, pc ProjectConfig) (include, exclude []string) {
 	return include, exclude
 }
 
-// fileSelected reports whether rel passes include/exclude globs, admitting
-// extensionless shell scripts with a shebang whenever shell files are included.
+// fileSelected reports whether rel passes include/exclude globs, matching
+// extensionless shell scripts with a shebang against shell globs on both sides.
 func fileSelected(fsPath, rel string, include, exclude []string) bool {
 	if matchAnyGlob(exclude, rel) {
+		return false
+	}
+	if extOf(rel) == "" && matchAnyGlob(exclude, "script.sh") && hasShellShebangFile(fsPath) {
 		return false
 	}
 	if len(include) == 0 || matchAnyGlob(include, rel) {

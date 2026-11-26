@@ -410,23 +410,57 @@ func TestTreeCommentContextCoversFollowingFunction(t *testing.T) {
 func TestSplitTreeShellTopLevelAndFunctions(t *testing.T) {
 	procedural := "#!/usr/bin/env bash\n# Boot the service\nset -euo pipefail\ncurl -sf http://example.test || true\n"
 	u1 := splitFile("entrypoint.sh", []byte(procedural))
-	if n := countKind(u1, "Function"); n != 1 {
-		t.Fatalf("procedural script: want 1 Function unit, got %d: %+v", n, u1)
+	if n := countKind(u1, "Script"); n != 1 {
+		t.Fatalf("procedural script: want 1 Script unit, got %d: %+v", n, u1)
+	}
+	if u1[0].Context != "Boot the service" || u1[0].ContextStart != 2 {
+		t.Errorf("procedural script Context = (%q, %d), want (Boot the service, 2)", u1[0].Context, u1[0].ContextStart)
 	}
 	if n := countKind(u1, "Comment"); n != 1 {
 		t.Fatalf("procedural script: want 1 Comment (skipping shebang), got %d", n)
 	}
 
-	mixed := "#!/bin/bash\nFOO=1\nhelper() {\n  echo \"$FOO\"\n}\n# Main block\nif [ -n \"$FOO\" ]; then\n  helper\nfi\n"
-	u2 := splitFile("run.sh", []byte(mixed))
-	if n := countKind(u2, "Function"); n != 2 {
-		t.Fatalf("mixed script: want 2 Function units (helper + main, not FOO=1), got %d: %+v", n, u2)
+	// Only swallowed-error binds to Script; name-mismatch and stub-body stay on Function only.
+	swallow, _ := findRule("swallowed-error")
+	nameMis, _ := findRule("name-mismatch")
+	stub, _ := findRule("stub-body")
+	if !ruleApplies(swallow, u1[0].Kind) || ruleApplies(nameMis, u1[0].Kind) || ruleApplies(stub, u1[0].Kind) {
+		t.Fatalf("Script routing wrong: swallow=%v name-mismatch=%v stub=%v",
+			ruleApplies(swallow, u1[0].Kind), ruleApplies(nameMis, u1[0].Kind), ruleApplies(stub, u1[0].Kind))
 	}
 
-	library := "#!/bin/bash\nLIB_VER=1\nfoo() { echo a; }\nbar() { echo b; }\n"
+	mixed := "#!/bin/bash\nFOO=1\nhelper() {\n  echo \"$FOO\"\n}\n# Main block\nif [ -n \"$FOO\" ]; then\n  helper\nfi\n"
+	u2 := splitFile("run.sh", []byte(mixed))
+	if countKind(u2, "Function") != 1 || countKind(u2, "Script") != 1 {
+		t.Fatalf("mixed script: want 1 Function + 1 Script, got %+v", u2)
+	}
+	var body *Unit
+	for i := range u2 {
+		if u2[i].Kind == "Script" {
+			body = &u2[i]
+		}
+	}
+	if body == nil || body.Start != 7 || body.End != 9 || strings.Contains(body.Text, "helper() {") || body.Context != "Main block" {
+		t.Fatalf("main run must be lines 7-9 with Context 'Main block' and no function body: %+v", body)
+	}
+
+	// Nested function_definition inside control flow must not be double-covered by a Script unit.
+	nested := "#!/bin/bash\nif [ -z \"$BASH_VERSION\" ]; then\n  shim() { echo hi; }\nfi\nshim\n"
+	uNested := splitFile("nested.zsh", []byte(nested))
+	if countKind(uNested, "Function") != 1 || countKind(uNested, "Script") != 1 {
+		t.Fatalf("nested.zsh: want 1 Function + 1 Script, got %+v", uNested)
+	}
+	for _, u := range uNested {
+		if u.Kind == "Script" && strings.Contains(u.Text, "shim()") {
+			t.Fatalf("Script unit double-covered nested function: %+v", u)
+		}
+	}
+
+	// Bare assignments and export/declare headers before functions emit no Script unit.
+	library := "#!/bin/bash\nLIB_VER=1\nexport LIB_MODE=prod\nfoo() { echo a; }\nbar() { echo b; }\n"
 	u3 := splitFile("lib.bash", []byte(library))
-	if n := countKind(u3, "Function"); n != 2 {
-		t.Fatalf("library script: want 2 Function units only, got %d: %+v", n, u3)
+	if countKind(u3, "Function") != 2 || countKind(u3, "Script") != 0 {
+		t.Fatalf("library script: want 2 Function units and 0 Script units, got %+v", u3)
 	}
 }
 
@@ -443,18 +477,23 @@ func TestShellShebangDetectionAndExtensionlessCollect(t *testing.T) {
 	}
 
 	units := splitFile(".github/scripts/deploy", []byte("#!/usr/bin/env bash\n# deploy\nexec ./run\n"))
-	if countKind(units, "Function") != 1 || countKind(units, "Comment") != 1 {
+	if countKind(units, "Script") != 1 || countKind(units, "Comment") != 1 {
 		t.Fatalf("extensionless script under dot-dir failed to split: %+v", units)
 	}
 
 	dir := t.TempDir()
 	mustWrite := func(name, body string) {
 		t.Helper()
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o755); err != nil {
+		full := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
 	mustWrite("deploy", "#!/usr/bin/env bash\necho ok\n")
+	mustWrite("scripts.d/release", "#!/usr/bin/env sh\necho rel\n")
 	mustWrite("tool", "#!/usr/bin/env python3\nprint(1)\n")
 	mustWrite("notes", "plain text\n")
 	mustWrite("app.go", "package p\n")
@@ -464,7 +503,7 @@ func TestShellShebangDetectionAndExtensionlessCollect(t *testing.T) {
 		t.Fatalf("collectFiles: %v", err)
 	}
 	joined := strings.Join(got, "\n")
-	if !strings.Contains(joined, "deploy") || !strings.Contains(joined, "app.go") {
+	if !strings.Contains(joined, "deploy") || !strings.Contains(joined, "scripts.d/release") || !strings.Contains(joined, "app.go") {
 		t.Fatalf("missing expected files in %q", joined)
 	}
 	if strings.Contains(joined, "tool") || strings.Contains(joined, "notes") {
@@ -473,5 +512,18 @@ func TestShellShebangDetectionAndExtensionlessCollect(t *testing.T) {
 	goOnly, err := collectFiles([]string{dir}, []string{"*.go"}, nil)
 	if err != nil || len(goOnly) != 1 || !strings.HasSuffix(goOnly[0], "app.go") {
 		t.Fatalf("custom --include *.go must not pick up shell scripts: %v %v", goOnly, err)
+	}
+
+	// Excluding *.sh must also exclude extensionless shell scripts.
+	gotExcl, err := collectFiles([]string{dir}, defaultInclude(), []string{"**/*.sh"})
+	if err != nil {
+		t.Fatalf("collectFiles with exclude: %v", err)
+	}
+	joinedExcl := strings.Join(gotExcl, "\n")
+	if strings.Contains(joinedExcl, "deploy") || strings.Contains(joinedExcl, "scripts.d/release") {
+		t.Fatalf("exclude **/*.sh should drop extensionless shell scripts: %q", joinedExcl)
+	}
+	if !strings.Contains(joinedExcl, "app.go") {
+		t.Fatalf("exclude **/*.sh should keep app.go: %q", joinedExcl)
 	}
 }

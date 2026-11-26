@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path"
 	"strings"
 
 	sitter "github.com/smacker/go-tree-sitter"
@@ -31,6 +32,7 @@ type tsCfg struct {
 	callTests map[string]bool
 	callHooks map[string]bool
 	testPref  string
+	bodyUnits bool
 }
 
 var (
@@ -43,53 +45,53 @@ var tsLangs = map[string]tsCfg{
 		"typescript", tsx.GetLanguage,
 		map[string]bool{"interface_declaration": true},
 		jsTestCalls, jsHookCalls,
-		"",
+		"", false,
 	},
 	"js": {
 		"javascript", javascript.GetLanguage,
 		nil,
 		jsTestCalls, jsHookCalls,
-		"",
+		"", false,
 	},
 	"py": {
 		"python", python.GetLanguage,
-		nil, nil, nil, "test_",
+		nil, nil, nil, "test_", false,
 	},
 	"rs": {
 		"rust", rust.GetLanguage,
 		map[string]bool{"trait_definition": true},
-		nil, nil, "test_",
+		nil, nil, "test_", false,
 	},
 	"sh": {
 		"bash", bash.GetLanguage,
-		nil, nil, nil, "",
+		nil, nil, nil, "", true,
 	},
 	"java": {
 		"java", java.GetLanguage,
 		map[string]bool{"interface_declaration": true},
-		nil, nil, "test_",
+		nil, nil, "test_", false,
 	},
 	"c": {
 		"c", c.GetLanguage,
-		nil, nil, nil, "",
+		nil, nil, nil, "", false,
 	},
 	"cpp": {
 		"cpp", cpp.GetLanguage,
-		nil, nil, nil, "",
+		nil, nil, nil, "", false,
 	},
 	"cs": {
 		"csharp", csharp.GetLanguage,
 		map[string]bool{"interface_declaration": true},
-		nil, nil, "",
+		nil, nil, "", false,
 	},
 	"kt": {
 		"kotlin", kotlin.GetLanguage,
 		map[string]bool{"interface_declaration": true},
-		nil, nil, "",
+		nil, nil, "", false,
 	},
 	"swift": {
 		"swift", swift.GetLanguage,
-		nil, nil, nil, "",
+		nil, nil, nil, "", false,
 	},
 }
 
@@ -108,10 +110,10 @@ var tsFuncKinds = map[string]bool{
 	"function_definition": true, "constructor_declaration": true,
 }
 
-func splitTree(path string, src []byte, cfg tsCfg) []Unit {
+func splitTree(filePath string, src []byte, cfg tsCfg) []Unit {
 	root, err := sitter.ParseCtx(context.Background(), src, cfg.lang())
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "warn: %s (%s): %v (skipped)\n", path, cfg.name, err)
+		fmt.Fprintf(os.Stderr, "warn: %s (%s): %v (skipped)\n", filePath, cfg.name, err)
 		return nil
 	}
 	lines := strings.Split(string(src), "\n")
@@ -123,7 +125,7 @@ func splitTree(path string, src []byte, cfg tsCfg) []Unit {
 	docs := map[*sitter.Node]docInfo{}
 
 	funcUnit := func(n *sitter.Node, kind string) Unit {
-		u := Unit{Kind: kind, File: path,
+		u := Unit{Kind: kind, File: filePath,
 			Start: int(n.StartPoint().Row) + 1, End: int(n.EndPoint().Row) + 1,
 			Text: n.Content(src), name: unitDeclName(n, src)}
 		if d, ok := docs[n.PrevSibling()]; ok {
@@ -174,14 +176,14 @@ func splitTree(path string, src []byte, cfg tsCfg) []Unit {
 		}
 	}
 	walk(root)
-	if cfg.name == "bash" {
-		units = append(units, shellBodyUnits(root, path, lines)...)
+	if cfg.bodyUnits {
+		units = append(units, shellBodyUnits(root, filePath, src, lines)...)
 	}
-	units = append(units, collectComments(root, path, cfg, src, lines)...)
+	units = append(units, collectComments(root, filePath, cfg, src, lines)...)
 
 	// File skeleton from top-level declarations.
 	var sk []string
-	sk = append(sk, fmt.Sprintf("file %s (lines 1-%d)", path, len(lines)))
+	sk = append(sk, fmt.Sprintf("file %s (lines 1-%d)", filePath, len(lines)))
 	for i, count := 0, int(root.ChildCount()); i < count; i++ {
 		child := root.Child(i)
 		if !child.IsNamed() || strings.Contains(child.Type(), "comment") {
@@ -202,7 +204,7 @@ func splitTree(path string, src []byte, cfg tsCfg) []Unit {
 		}
 	}
 	if len(sk) > 1 {
-		units = append(units, Unit{Kind: "File", File: path, Start: 1, End: len(lines),
+		units = append(units, Unit{Kind: "File", File: filePath, Start: 1, End: len(lines),
 			Text: strings.Join(sk, "\n")})
 	}
 	return units
@@ -225,28 +227,24 @@ func isShellShebang(src []byte) bool {
 	if len(fields) == 0 {
 		return false
 	}
-	cmd := baseName(fields[0])
+	cmd := path.Base(fields[0])
 	if cmd == "env" {
 		for _, arg := range fields[1:] {
 			if strings.HasPrefix(arg, "-") || strings.Contains(arg, "=") {
 				continue
 			}
-			cmd = baseName(arg)
+			cmd = path.Base(arg)
 			break
 		}
 	}
 	return shellInterpreters[cmd]
 }
 
-func baseName(p string) string {
-	if i := strings.LastIndexAny(p, `/\`); i >= 0 {
-		return p[i+1:]
+func hasShellShebangFile(filePath string) bool {
+	if st, err := os.Stat(filePath); err != nil || !st.Mode().IsRegular() {
+		return false
 	}
-	return p
-}
-
-func hasShellShebangFile(path string) bool {
-	f, err := os.Open(path)
+	f, err := os.Open(filePath)
 	if err != nil {
 		return false
 	}
@@ -256,36 +254,73 @@ func hasShellShebangFile(path string) bool {
 	return isShellShebang(buf[:n])
 }
 
-// shellBodyUnits emits Function units for top-level executable runs outside
-// function definitions, so procedural shell scripts are checked by function rules.
-func shellBodyUnits(root *sitter.Node, path string, lines []string) []Unit {
+// declaresFunc reports whether n is or contains a function_definition.
+func declaresFunc(n *sitter.Node) bool {
+	if n.Type() == "function_definition" {
+		return true
+	}
+	for i, count := 0, int(n.ChildCount()); i < count; i++ {
+		if declaresFunc(n.Child(i)) {
+			return true
+		}
+	}
+	return false
+}
+
+// shellRunDoc returns the comment run immediately above first, skipping a line-1 shebang.
+func shellRunDoc(first *sitter.Node, src []byte) (string, int) {
+	prev := first.PrevSibling()
+	if prev == nil || !strings.Contains(prev.Type(), "comment") || prev.EndPoint().Row+1 < first.StartPoint().Row {
+		return "", 0
+	}
+	if prev.StartPoint().Row == 0 && strings.HasPrefix(prev.Content(src), "#!") {
+		return "", 0
+	}
+	text, start := docRun(prev, src)
+	if start == 1 && strings.HasPrefix(text, "!") {
+		if nl := strings.IndexByte(text, '\n'); nl >= 0 {
+			return strings.TrimSpace(text[nl+1:]), 2
+		}
+		return "", 0
+	}
+	return text, start
+}
+
+// shellBodyUnits emits Script units for top-level executable runs outside
+// function definitions, keeping them disjoint from Function units.
+func shellBodyUnits(root *sitter.Node, filePath string, src []byte, lines []string) []Unit {
 	var units []Unit
+	var first *sitter.Node
 	start, end, hasExec := 0, 0, false
 	flush := func() {
 		if hasExec && start > 0 && end >= start {
 			e := min(end, len(lines))
-			units = append(units, Unit{
-				Kind: "Function", File: path, Start: start, End: e,
+			u := Unit{
+				Kind: "Script", File: filePath, Start: start, End: e,
 				Text: strings.Join(lines[start-1:e], "\n"),
-			})
+			}
+			if first != nil {
+				u.Context, u.ContextStart = shellRunDoc(first, src)
+			}
+			units = append(units, u)
 		}
-		start, end, hasExec = 0, 0, false
+		first, start, end, hasExec = nil, 0, 0, false
 	}
 	for i, count := 0, int(root.ChildCount()); i < count; i++ {
 		c := root.Child(i)
 		if !c.IsNamed() || strings.Contains(c.Type(), "comment") {
 			continue
 		}
-		if c.Type() == "function_definition" {
+		if declaresFunc(c) {
 			flush()
 			continue
 		}
 		s, e := int(c.StartPoint().Row)+1, int(c.EndPoint().Row)+1
 		if start == 0 {
-			start = s
+			first, start = c, s
 		}
 		end = e
-		if c.Type() != "variable_assignment" {
+		if c.Type() != "variable_assignment" && c.Type() != "declaration_command" {
 			hasExec = true
 		}
 	}
