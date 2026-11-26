@@ -261,7 +261,7 @@ func parseLintFlags(args []string) (lintOpts, error) {
 	fl.IntVar(&o.workers, "workers", 8, "concurrent in-flight batches")
 	fl.IntVar(&o.budget, "budget", 0, "max model calls this run, 0 = unlimited")
 	fl.Float64Var(&o.temp, "temperature", 0, "sampling temperature")
-	fl.Float64Var(&o.threshold, "threshold", 0.5, "minimum noul probability for systemone providers; each rule also has its own floor")
+	fl.Float64Var(&o.threshold, "threshold", 0.5, "minimum confidence to report (overrides per-rule floors while keeping vetoes)")
 	fl.BoolVar(&o.noCache, "no-cache", false, "bypass ~/.cache/lintdec/cache")
 	fl.BoolVar(&o.noIgnore, "no-ignore", false, "report findings despite inline //lintdec:ignore")
 	fl.BoolVar(&o.quiet, "quiet", false, "no progress output")
@@ -279,6 +279,9 @@ func parseLintFlags(args []string) (lintOpts, error) {
 	fl.Visit(func(f *flag.Flag) { o.setFlags[f.Name] = true })
 	if o.budget < 0 {
 		return o, fmt.Errorf("--budget cannot be negative")
+	}
+	if o.setFlags["threshold"] && (o.threshold <= 0 || o.threshold > 1) {
+		return o, fmt.Errorf("--threshold must be in (0, 1]")
 	}
 	if o.setFlags["diff"] && o.diff == "" {
 		return o, fmt.Errorf("--diff needs a non-empty base ref")
@@ -505,7 +508,7 @@ func runPool(ctx context.Context, jobs []job, o lintOpts, cl *client, ch *cache,
 		}
 		for _, r := range j.rules {
 			vv := verdicts[r.ID]
-			if !reportable(r, vv, cl.calibrate) {
+			if !reportable(r, vv, cl.floorOverride(), cl.calibrate) {
 				continue
 			}
 			f := buildFinding(j, r, vv, linesCache)
@@ -804,9 +807,10 @@ func newLintClient(prov endpoint, o lintOpts) *client {
 		trustCost: reportsProviderCost(prov.BaseURL),
 		costs:     &costAccumulator{},
 		budget:    &requestBudget{limit: int64(o.budget)},
-		temp:      o.temp,
-		threshold: o.threshold,
-		calibrate: o.calibrate,
+		temp:         o.temp,
+		threshold:    o.threshold,
+		thresholdSet: o.setFlags["threshold"],
+		calibrate:    o.calibrate,
 		httpc:     &http.Client{Timeout: 5 * time.Minute},
 	}
 }

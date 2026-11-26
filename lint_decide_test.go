@@ -333,12 +333,11 @@ func TestDecodeCompletionFallsBackToReasoning(t *testing.T) {
 func TestParseVerdictsUnbalancedFallback(t *testing.T) {
 	r, _ := findRule("comment-long")
 	j := job{unit: Unit{Kind: "Comment", File: "a.go", Start: 1, End: 1}, rules: []Rule{r}}
-	raw := "unclosed { prefix {\"comment-long\":{\"lint\":false}}"
-	if _, _, err := parseVerdicts(raw, j); err == nil {
-		t.Fatal("expected error for unbalanced braces before JSON")
+	if _, _, err := parseVerdicts(`{"comment-long": invalid}`, j); err == nil || !strings.Contains(err.Error(), "bad model JSON") {
+		t.Fatalf("expected bad model JSON error, got %v", err)
 	}
-	if _, ok := extractJSONObject("no braces here"); ok {
-		t.Fatal("expected false when no closing brace exists")
+	if _, _, err := parseVerdicts("no braces here", j); err == nil || !strings.Contains(err.Error(), "no JSON") {
+		t.Fatalf("expected no JSON error, got %v", err)
 	}
 }
 
@@ -387,5 +386,74 @@ func TestCacheKeyUsesBatchVersionForChatAndPerRuleForSystemOne(t *testing.T) {
 	}
 	if s1.cacheRuleVersion("comment-long") == s1.cacheRuleVersion("todo-no-owner") {
 		t.Error("distinct rules should have distinct per-rule versions")
+	}
+}
+
+func TestParseVerdictsIgnoresTrailingProseBraces(t *testing.T) {
+	r, _ := findRule("comment-long")
+	j := job{unit: Unit{Kind: "Comment", File: "a.go", Start: 1, End: 1}, rules: []Rule{r}}
+	cases := []struct {
+		name string
+		raw  string
+		lint bool
+	}{
+		{"trailing non-json brace", `{"comment-long":{"lint":false}}` + "\nNote: {kind: 'pass'} is valid.", false},
+		{"trailing valid non-verdict json", `{"comment-long":{"lint":true,"severity":"med","confidence":0.9,"reason":"too long"}}` + "\nExample: {\"kind\":\"pass\"}", true},
+		{"earlier unclosed brace in prose", `Checking {unclosed prose` + "\n" + `{"comment-long":{"lint":false}}`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, missing, err := parseVerdicts(tc.raw, j)
+			if err != nil || len(missing) != 0 || got["comment-long"].Lint != tc.lint {
+				t.Fatalf("got=%+v missing=%v err=%v", got, missing, err)
+			}
+		})
+	}
+}
+
+func TestExplicitThresholdOverridesRuleFloorWhileKeepingVeto(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		json.NewEncoder(w).Encode(map[string]any{
+			"model": "clef",
+			"answers": map[string]any{
+				"md-prose-list":      map[string]any{"type": "noul", "noul": 0.80},
+				"md-prose-list~veto": map[string]any{"type": "noul", "noul": 0.30},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	rule, _ := findRule("md-prose-list")
+	u := Unit{Kind: "Paragraph", File: "a.md", Start: 1, End: 1, Text: "a, b, c, d, e"}
+	jobs := []job{{unit: u, rules: []Rule{rule}}}
+	ch := &cache{dir: t.TempDir(), on: true}
+	lines := map[string][]string{"a.md": {u.Text}}
+
+	// Default run uses ruleFloor("md-prose-list") = 0.85, so 0.80 is suppressed.
+	clDefault := newLintClient(endpoint{BaseURL: srv.URL, Protocol: "systemone", Model: "clef"}, lintOpts{threshold: 0.5})
+	clDefault.httpc = srv.Client()
+	resDefault := runPool(context.Background(), jobs, lintOpts{workers: 1, quiet: true}, clDefault, ch, newProgress(1, true), lines, nil)
+	if len(resDefault.findings) != 0 {
+		t.Fatalf("default floor should suppress 0.80 (< 0.85), got %d findings", len(resDefault.findings))
+	}
+
+	// Explicit --threshold 0.75 lowers the floor to 0.75 while keeping vetoes active.
+	clExplicit := newLintClient(endpoint{BaseURL: srv.URL, Protocol: "systemone", Model: "clef"}, lintOpts{
+		threshold: 0.75,
+		setFlags:  map[string]bool{"threshold": true},
+	})
+	clExplicit.httpc = srv.Client()
+	resExplicit := runPool(context.Background(), jobs, lintOpts{workers: 1, quiet: true}, clExplicit, ch, newProgress(1, true), lines, nil)
+	if len(resExplicit.findings) != 1 || calls.Load() != 1 {
+		t.Fatalf("explicit --threshold 0.75 should report 0.80 from cache: findings=%d calls=%d", len(resExplicit.findings), calls.Load())
+	}
+
+	// Out-of-range --threshold values are rejected.
+	for _, bad := range []string{"--threshold=0", "--threshold=-0.1", "--threshold=1.1"} {
+		if _, err := parseLintFlags([]string{bad}); err == nil {
+			t.Errorf("parseLintFlags(%q) should fail", bad)
+		}
 	}
 }

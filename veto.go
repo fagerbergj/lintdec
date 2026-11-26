@@ -106,15 +106,19 @@ func attachVetoes(rules []Rule, v map[string]Verdict) map[string]Verdict {
 	return out
 }
 
-// reportable applies the rule's floor and exception after the cache, so tuning them needs no new calls.
-// calibrate reports every verdict over the global threshold, for labeling.
-func reportable(r Rule, v Verdict, calibrate bool) bool {
+// reportable applies the confidence floor and exception after the cache, so tuning needs no new calls.
+// floorOverride > 0 replaces ruleFloor(r.ID) (from explicit --threshold) while keeping vetoes active.
+func reportable(r Rule, v Verdict, floorOverride float64, calibrate bool) bool {
 	if !v.Lint || calibrate {
 		return v.Lint
+	}
+	floor := ruleFloor(r.ID)
+	if floorOverride > 0 {
+		floor = floorOverride
 	}
 	cut, ok := ruleVetoCuts[r.ID]
 	if !ok {
 		cut = vetoConfidence
 	}
-	return v.Confidence >= ruleFloor(r.ID) && (v.Veto == nil || *v.Veto < cut)
+	return v.Confidence >= floor && (v.Veto == nil || *v.Veto < cut)
 }
