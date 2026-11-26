@@ -2,6 +2,7 @@ package main
 
 import (
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -64,5 +65,15 @@ func TestDefaultOffRulesNeedAnExplicitRequest(t *testing.T) {
 	}
 	if got, err := resolveRules("", ProjectConfig{RulesOn: []string{"no-such-rule"}}); err != nil || len(got) != len(active) {
 		t.Fatalf("an unknown lintdec.yaml rule must be ignored, not fail the run: %v", err)
+	}
+}
+
+// Offline shape check, like the init() invariants in rules.go: a citation a
+// reader cannot follow is not a citation. No fetches here, so the suite stays fast.
+func TestEveryRuleHasSource(t *testing.T) {
+	for _, r := range rules {
+		if !strings.Contains(r.Source, "://") {
+			t.Errorf("rule %s must cite a primary source with a URL, got %q", r.ID, r.Source)
+		}
 	}
 }
