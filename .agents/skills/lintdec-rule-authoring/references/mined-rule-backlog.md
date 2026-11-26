@@ -1,6 +1,6 @@
 # Mined Candidate Rules Backlog
 
-Candidate rules mined from published software-maintainability, testability, static-analysis, and repository-health primary sources (Google SWE Book, TSR Test Smell Catalog, OpenSSF Scorecard, Google Tricorder, Sola-ST Suppression Study, Refactoring.Guru, Martin Fowler, Diátaxis), filtered through the 5 admission gates against `lintdec`'s current **37 rules** (`b98240f`).
+Candidate rules mined from published software-maintainability, testability, static-analysis, and repository-health primary sources (Google SWE Book, TestSmells & TSR Catalog, OpenSSF Scorecard, Google Tricorder, `eslint-comments` / Hu et al. FSE 2025, Refactoring.Guru, Martin Fowler, Diátaxis), filtered through the 5 admission gates against `lintdec`'s current **37 rules** (`b98240f`).
 
 ---
 
@@ -9,7 +9,7 @@ Candidate rules mined from published software-maintainability, testability, stat
 All five pass the 5 admission gates, fit existing `Unit.Kind`s with zero splitter changes, and pair with cheap RE2 pre-filters. Pre-filter savings below are initial estimates until measured via `--dump-units`.
 
 ### 1. `test-ignored-no-reason` *(TestFunction · `warning` · est. ~99% pre-filtered)*
-- **Source:** TSR Test Smell Catalog, Ignored Test (`https://tsr-catalog.readthedocs.io/en/latest/smells/ignored-test.html`) & Microsoft Lam et al., FaTB 2020 (`https://www.microsoft.com/en-us/research/wp-content/uploads/2020/07/LamETAL20FaTB.pdf`) — skipped tests rot permanently without a tracked issue or conditional guard.
+- **Source:** TestSmells Catalog, Ignored Test (`https://testsmells.org/pages/testsmells.html`) & TSR Test Smell Catalog (`https://tsr-catalog.readthedocs.io/en/latest/smells/ignored-test.html`) — skipped tests rot permanently without a tracked issue or conditional guard.
 - **Why semantic:** Regex finds `t.Skip` / `test.skip` / `@Disabled`, but platform/env capability guards (`if runtime.GOOS != "linux"`) are legitimate while bare permanent skips are debt.
 - **Pre-filter (`filters.go`):** `(?i)(?:^|[^-\w])(?:t\.Skip\w*|test\.skip|it\.skip|describe\.skip|xit|xtest|@Disabled|@Ignore|@pytest\.mark\.skip|unittest\.skip)(?:[^-\w]|$)`
 - **Draft rubric:** *"The test is unconditionally skipped or disabled without naming a tracking ticket, owner, or concrete re-enable condition, leaving dead test coverage behind."*
@@ -50,7 +50,7 @@ All five pass the 5 admission gates, fit existing `Unit.Kind`s with zero splitte
 
 | Candidate | Kind | Source | Why Tier B |
 |---|---|---|---|
-| `suppression-no-reason` | Dedicated `Directive` kind *(splitter change)* | Sola-ST Suppression Study (`https://arxiv.org/abs/2301.08022`) | `structuralComment` in `split.go` currently drops tool directives before `buildJobs`, so this requires re-kinding suppression comments as `Directive` units. **Gate 1 note:** bare directives with zero trailing text can be checked deterministically, while judging whether trailing prose is a concrete rationale vs. a tautological excuse (`// @ts-ignore fix type error`) is semantic. |
+| `suppression-no-reason` | Dedicated `Directive` kind *(splitter change)* | `eslint-comments/require-description` (`https://eslint-community.github.io/eslint-plugin-eslint-comments/rules/require-description.html`) & Hu et al., FSE 2025 (`https://doi.org/10.1145/3715729`) | `structuralComment` in `split.go` currently drops tool directives before `buildJobs`, so this requires re-kinding suppression comments as `Directive` units. **Gate 1 note:** bare directives with zero trailing text can be checked deterministically, while judging whether trailing prose is a concrete rationale vs. a tautological excuse (`// @ts-ignore fix type error`) is semantic. |
 | `data-clump` | `Interface` *(or `File` with param skeletons)* | Refactoring.Guru, Data Clumps (`https://refactoring.guru/smells/data-clumps`) | `Interface` works today (cheap, few units); `File` skeletons currently omit parameter lists, so file-wide clumps need a splitter extension. |
 | `md-undocumented-env` | `Document` / `Section` | Twelve-Factor / Dev Containers (`https://containers.dev/`) | Pre-filter on `ENV_VAR=` / `$ENV_VAR` + setup heading; risk of false positives on snippets that intentionally point to `.env.example`. |
 | `md-missing-verification` | `Section` | Diátaxis How-to (`https://diataxis.fr/how-to-guides/`) | Pre-filter on setup/install headings with fenced shell blocks; borderline actionability on short 1-command install sections. |
@@ -67,6 +67,6 @@ Documented here so future rule-mining passes do not re-propose them:
 | Unused vars/params/exports/files, unreachable code, empty functions, self-compare/assign (`tsc`, ESLint, `knip`: `https://knip.dev/`) | 100% deterministic AST/type/graph facts. | `tsc`, `eslint`, `knip`, `go vet` |
 | Cyclomatic/cognitive complexity, duplication (`jscpd`: `https://github.com/kucherenko/jscpd`), import cycles & layers (`ArchUnit`: `https://www.archunit.org/userguide/html/000_Index.html`) | Deterministic/metric-based; `complex-method` was already removed (`tuning-fps.md:91`). | `sloplint`, `jscpd`, `madge`, `dependency-cruiser`, `ArchUnit` |
 | Hardcoded ambient I/O / wall-clock / RNG in domain code (ESLint `no-restricted-imports`: `https://eslint.org/docs/latest/rules/no-restricted-imports`) | Without a declared domain-vs-adapter path map, single-function LLM checks false-positive on every CLI/entrypoint. | `no-restricted-imports`, `no-restricted-globals`, `ArchUnit` |
-| Stale feature flags / deprecation age / TODO age (Hoyos et al., EMSE 2021; Uber Piranha) | Requires git blame / wall clock / rollout metadata; `comment-stale` had 0/17 precision (`tuning-fps.md:92`). | Repo scorecard / Piranha / blame script |
+| Stale feature flags / deprecation age / TODO age (Uber Piranha: `https://github.com/uber/piranha`) | Requires git blame / wall clock / rollout metadata; `comment-stale` had 0/17 precision (`tuning-fps.md:92`). | Repo scorecard / Piranha / blame script |
 | Coverage %, mutation score (`https://arxiv.org/abs/2102.11378`), flaky retry rate, PR size, bus factor (`https://homepages.dcc.ufmg.br/~mtov/pub/2019-sqj.pdf`), churn bursts, OSV CVEs (`https://google.github.io/osv.dev/api/`), branch protection | Runtime, git-history, or Git-host API signals; several are also gameable proxies (Google SWE Book Ch. 11: coverage targets become ceilings). | Repo scorecard / CI gates / `osv-scanner` |
 | Magic numbers (`https://eslint.org/docs/latest/rules/no-magic-numbers`), short identifier names, comment-to-code ratio | High documented false-positive rates or gameable text ratios. | Language linter with allowlists (or excluded) |

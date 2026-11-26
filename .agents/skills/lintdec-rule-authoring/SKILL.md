@@ -38,7 +38,7 @@ This skill defines the repeatable lifecycle for taking a `lintdec` rule from a p
   ```bash
   gofmt -l . && go vet ./... && go test ./...
   ```
-- [ ] **Step 5 — Run Blind Synthetic Recall Lab on Clef:** Create blind fixtures (neutral filenames and headings, zero `PLANTED` hint comments) with both **loud plants** (must fire) and **quiet twins** (must stay silent). Run Clef with `--no-cache --calibrate --threshold 0.50 --out jsonl` over the new rule **plus all default-on rules for that unit kind** to test both recall/precision and subsumption. Score results with `scripts/score-lab.py`. A rule that misses textbook plants or is 100% caught by an existing default rule does not advance.
+- [ ] **Step 5 — Run Blind Synthetic Recall Lab on Clef:** Create blind fixtures (neutral filenames and headings, zero `PLANTED` hint comments) with both **loud plants** (must fire) and **quiet twins** (must stay silent). Run Clef (the local single-slot System One provider, configured as `clef`) with `--no-cache --calibrate --threshold 0.50 --out jsonl` over the new rule **plus all default-on rules for that unit kind** to test both recall/precision and subsumption. Score results with `scripts/score-lab.py`. A rule that misses textbook plants or is 100% caught by an existing default rule does not advance.
 - [ ] **Step 6 — Multi-Repo Dogfood & 4-Tier Audit:** Run the opt-in rule across at least two diverse repositories (not only a single `sloplint`-clean repo) on Clef (or Jev + Clef spot check). Classify every hit as true positive or false positive and compute marginal decisions and finding rate per `references/calibration-and-promotion.md`.
 - [ ] **Step 7 — Decide Default Status, Record Evidence, and Gate Diff:**
   - Promote out of `defaultOff` only if it lands in Tier 1 (high precision on Clef, clear maintainability value, acceptable marginal cost).
@@ -72,5 +72,5 @@ Run this loop after every rule edit until every check passes cleanly:
 
 - Read `references/admission-and-rubric-guide.md` during **Steps 1–3** to apply the 5-gate admission rubric, check the deterministic-vs-semantic boundary, and author rubrics, RE2 pre-filters, and isolated vetoes.
 - Read `references/calibration-and-promotion.md` during **Steps 5–7** to structure blind synthetic labs, run Clef/Jev dogfood sweeps, and apply the 4-tier promotion/deletion matrix.
-- Read `references/mined-rule-backlog.md` when **choosing the next rule to build** — contains vetted candidates and explicit rejections mined from the `quack` maintainability, scorecard, and sloppy-code research reports.
+- Read `references/mined-rule-backlog.md` when **choosing the next rule to build** — contains vetted candidates and explicit rejections mined from published maintainability, testability, static-analysis, and documentation primary sources and filtered through the 5 admission gates.
 - Run `scripts/score-lab.py` during **Step 5** to score a `lintdec --calibrate --threshold 0.50 --out jsonl` lab run against a blind JSON manifest for recall, quiet false positives, veto margins, and subsumption.

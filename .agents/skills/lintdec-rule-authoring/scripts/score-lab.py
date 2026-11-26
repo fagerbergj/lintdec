@@ -23,27 +23,49 @@ DEFAULT_FLOORS = {
     "md-no-purpose": 0.85,
 }
 VETO_CUTS = {"flakey-test": 0.3, "comment-excuse": 0.7}
+DEFAULT_FLOOR = 0.75
+DEFAULT_VETO_CUT = 0.5
 
 
-def load_veto_maps() -> tuple[dict[str, float], dict[str, float]]:
-    floors, cuts = dict(DEFAULT_FLOORS), dict(VETO_CUTS)
-    veto_go = Path(__file__).resolve().parents[4] / "veto.go"
-    if not veto_go.is_file():
-        return floors, cuts
+def find_veto_go() -> Path | None:
+    for parent in Path(__file__).resolve().parents:
+        candidate = parent / "veto.go"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def load_veto_config() -> tuple[dict[str, float], dict[str, float], float, str]:
+    floors, cuts, default_cut = dict(DEFAULT_FLOORS), dict(VETO_CUTS), DEFAULT_VETO_CUT
+    veto_go = find_veto_go()
+    if veto_go is None:
+        print("warning: veto.go not found in ancestor dirs; using frozen fallback floors/cuts", file=sys.stderr)
+        return floors, cuts, default_cut, "fallback mirror"
     text = veto_go.read_text()
+    missing = []
     for var_name, target in (("ruleFloors", floors), ("ruleVetoCuts", cuts)):
         m = re.search(rf"var\s+{var_name}\s*=\s*map\[string\]float64\{{([^}}]*)\}}", text, re.S)
         if m:
             target.clear()
             for rid, val in re.findall(r'"([^"]+)"\s*:\s*([0-9.]+)', m.group(1)):
                 target[rid] = float(val)
-    return floors, cuts
+        else:
+            missing.append(var_name)
+    cm = re.search(r"const\s+vetoConfidence\s*=\s*([0-9.]+)", text)
+    if cm:
+        default_cut = float(cm.group(1))
+    else:
+        missing.append("vetoConfidence")
+    if missing:
+        print(f"warning: {', '.join(missing)} not found in {veto_go}; using fallback mirror", file=sys.stderr)
+        return floors, cuts, default_cut, f"veto.go + fallback ({', '.join(missing)})"
+    return floors, cuts, default_cut, "veto.go"
 
 
-def is_reportable(finding: dict, floors: dict[str, float], cuts: dict[str, float]) -> bool:
+def is_reportable(finding: dict, floors: dict[str, float], cuts: dict[str, float], default_cut: float) -> bool:
     rule = finding["rule"]
-    floor = floors.get(rule, 0.75)
-    cut = cuts.get(rule, 0.5)
+    floor = floors.get(rule, DEFAULT_FLOOR)
+    cut = cuts.get(rule, default_cut)
     veto = finding.get("veto")
     return finding["confidence"] >= floor and (veto is None or veto < cut)
 
@@ -71,27 +93,34 @@ def match_target(findings: list[dict], rule: str, file_suffix: str, line: int) -
     ]
 
 
-def fmt_score(hit: dict, floors: dict[str, float], cuts: dict[str, float]) -> str:
+def fmt_score(hit: dict, floors: dict[str, float], cuts: dict[str, float], default_cut: float) -> str:
     veto = hit.get("veto")
     vstr = f"{veto:.3f}" if veto is not None else "none"
-    tag = "REP" if is_reportable(hit, floors, cuts) else "SUP"
+    tag = "REP" if is_reportable(hit, floors, cuts, default_cut) else "SUP"
     return f"{tag} conf={hit['confidence']:.3f} veto={vstr}"
 
 
-def score_rule(rule: str, spec: dict, findings: list[dict], floors: dict[str, float], cuts: dict[str, float]) -> tuple[int, int, int, int]:
+def score_rule(
+    rule: str,
+    spec: dict,
+    findings: list[dict],
+    floors: dict[str, float],
+    cuts: dict[str, float],
+    default_cut: float,
+) -> tuple[int, int, int, int]:
     loud_hits = loud_total = quiet_fps = quiet_total = 0
     for item in spec["loud"]:
         loud_total += 1
         hits = match_target(findings, rule, item["file"], item["line"])
-        rep = [h for h in hits if is_reportable(h, floors, cuts)]
+        rep = [h for h in hits if is_reportable(h, floors, cuts, default_cut)]
         subsumed = [
             r["rule"] for r in findings
             if r["rule"] != rule
             and r["file"].endswith(item["file"])
             and r["line"] <= item["line"] <= r.get("end_line", r["line"])
-            and is_reportable(r, floors, cuts)
+            and is_reportable(r, floors, cuts, default_cut)
         ]
-        status = fmt_score(hits[0], floors, cuts) if hits else "NO HIT at this line"
+        status = fmt_score(hits[0], floors, cuts, default_cut) if hits else "NO HIT at this line"
         sub = f"  [also caught by: {', '.join(sorted(set(subsumed)))}]" if subsumed else ""
         if rep:
             loud_hits += 1
@@ -100,10 +129,10 @@ def score_rule(rule: str, spec: dict, findings: list[dict], floors: dict[str, fl
     for item in spec.get("quiet", []):
         quiet_total += 1
         hits = match_target(findings, rule, item["file"], item["line"])
-        rep = [h for h in hits if is_reportable(h, floors, cuts)]
+        rep = [h for h in hits if is_reportable(h, floors, cuts, default_cut)]
         if rep:
             quiet_fps += 1
-            print(f"  QUIET {item['file']}:{item['line']:<3d} -> FP! {fmt_score(rep[0], floors, cuts)}")
+            print(f"  QUIET {item['file']}:{item['line']:<3d} -> FP! {fmt_score(rep[0], floors, cuts, default_cut)}")
         else:
             print(f"  QUIET {item['file']}:{item['line']:<3d} -> ok")
     return loud_hits, loud_total, quiet_fps, quiet_total
@@ -133,11 +162,16 @@ def main() -> int:
         print(f"error: {err}", file=sys.stderr)
         return 2
 
-    floors, cuts = load_veto_maps()
+    floors, cuts, default_cut, source = load_veto_config()
+    applied = ", ".join(
+        f"{r}(floor={floors.get(r, DEFAULT_FLOOR):.2f}, cut={cuts.get(r, default_cut):.2f})"
+        for r in sorted(manifest)
+    )
+    print(f"scoring: {source} (default floor={DEFAULT_FLOOR:.2f}, cut={default_cut:.2f}; {applied})")
     tot_lh = tot_lt = tot_qfp = tot_qt = 0
     for rule, spec in sorted(manifest.items()):
         print(f"\n[{rule}]")
-        lh, lt, qfp, qt = score_rule(rule, spec, findings, floors, cuts)
+        lh, lt, qfp, qt = score_rule(rule, spec, findings, floors, cuts, default_cut)
         tot_lh += lh
         tot_lt += lt
         tot_qfp += qfp
