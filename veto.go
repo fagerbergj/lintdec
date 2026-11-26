@@ -15,7 +15,7 @@ var ruleVetoes = map[string]string{
 	"name-mismatch":            "Does the body do what its name says, read plainly?",
 	"comment-excuse":           "Does the comment explain a deliberate choice or constraint rather than apologize for or defer a problem?",
 	"comment-hedge":            "Does the comment state a known fact or documented limitation rather than leave doubt about whether the code is correct?",
-	"comment-history":          "Does the comment mainly state current behavior or a binding constraint, with any history only as a passing reference?",
+	"comment-history":          "Does the comment explain current behavior, a binding constraint, a live legacy data or schema format the code still handles, or an in-test scenario timeline (such as v1/v2 fixture steps), rather than narrating code or git history?",
 	"comment-long":             "Does every sentence in the comment state a non-obvious constraint, invariant, or design decision that the code cannot express, rather than pad a short note into an essay?",
 	"md-inanimate-actor":       "Is the subject of the marked verb in TARGET a person, a role (a PM, the caller, the recipient, the on-call engineer), a team or organization, or an AI model, agent, or assistant (an LLM, Claude, the agent)?",
 	"md-wordy-phrase":          "Would replacing the marked phrase in TARGET with a single plain word change the meaning here (for example \"should be able to\", \"for the sole purpose of\", a negation, or a fixed user-story template), or is the marked phrase inside quoted text, a title, or code?",
@@ -25,7 +25,6 @@ var ruleVetoes = map[string]string{
 	"md-hidden-verb":           "Is every weak-verb-plus-noun phrase in TARGET (such as \"performs an evaluation of\" or \"makes a determination of\") a standard term (for example \"access control\", \"code review\", \"go/no-go decision\"), a passive verb, or a lead-in to a list, rather than an action that one plain verb would say more directly?",
 	"md-prose-list":            "Are the inline items short words or names that read naturally in one sentence (such as \"Go, Kotlin, and TypeScript\"), or are the clauses one argument building to a conclusion, or is the sentence a fixed template?",
 	"md-prose-table":           "Is the TARGET already a table, or do the things it describes have different attributes from each other?",
-	"md-ambiguous-pronoun":     "Is there only one plausible referent for each pronoun, or would every plausible referent lead the reader to the same understanding and action?",
 	"md-topic-sentence":        "Does the paragraph have fewer than three sentences, or does its first sentence state or lead into the subject of the rest?",
 	"md-one-topic":             "Do all the sentences serve the paragraph's main point?",
 	// Under S-13, an automatic result belongs inside the preceding step rather than as its own step.
@@ -51,18 +50,17 @@ var ruleFloors = map[string]float64{
 	"md-list-not-parallel": 0.9,
 	"md-step-not-command":  0.85,
 	"md-no-purpose":        0.85,
-	"md-ambiguous-pronoun": 0.85,
 }
 
 var ruleVetoCuts = map[string]float64{"flakey-test": 0.3, "comment-excuse": 0.7}
 
 // defaultOff: opt-in rules (low recall, veto-dependent, high cost, or pending lab validation).
 var defaultOff = map[string]bool{
-	"assert-self": true, "file-several-jobs": true, "iface-god-method": true,
+	"file-several-jobs": true, "iface-god-method": true,
 	"incomplete-assertion": true, "name-mismatch": true, "stub-body": true,
-	"swallowed-error": true, "test-except-pass": true, "comment-excuse": true,
+	"swallowed-error": true, "comment-excuse": true, "comment-history": true,
 	"md-marketing": true, "md-heading-promise": true, "md-prose-table": true, "md-restates": true,
-	"md-ambiguous-pronoun": true, "md-step-not-command": true, "md-howto-digression": true, "md-blames-reader": true,
+	"md-step-not-command": true, "md-howto-digression": true, "md-blames-reader": true,
 	"md-noun-as-verb": true, "md-hidden-verb": true,
 	"md-one-sided-alternatives": true, "md-one-topic": true, "md-rfc-no-ask": true, "md-two-names": true,
 	"md-topic-sentence": true, "md-adr-many-decisions": true, "md-adr-no-cost": true,
