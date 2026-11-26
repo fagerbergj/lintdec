@@ -71,6 +71,7 @@ func isWorktree(dir string) bool {
 	return err == nil && !st.IsDir()
 }
 
+// commonAncestor returns the longest shared directory prefix of a and b, or (".", false) if none.
 func commonAncestor(a, b string) (string, bool) {
 	aSegs := strings.Split(filepath.ToSlash(a), "/")
 	bSegs := strings.Split(filepath.ToSlash(b), "/")
@@ -818,6 +819,7 @@ func newLintClient(prov endpoint, o lintOpts) *client {
 	}
 }
 
+// printLintHeader writes the run summary to stderr so stdout stays reserved for findings.
 func printLintHeader(nFiles, nUnits int, jobs []job, nRules int, model string) {
 	decisions := 0
 	for _, j := range jobs {

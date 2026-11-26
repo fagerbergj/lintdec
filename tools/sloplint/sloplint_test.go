@@ -131,7 +131,7 @@ func TestChangedRanges(t *testing.T) {
 
 func TestLintSourceReportsParseError(t *testing.T) {
 	got := lintSource("broken.go", []byte("package p\nfunc (\n"), nil)
-	if !any(got, "parse error:") {
-		t.Fatalf("expected parse error finding, got %v", got)
+	if len(got) != 1 || got[0].line != 2 || !strings.Contains(got[0].message, "parse error:") {
+		t.Fatalf("expected parse error finding on line 2, got %+v", got)
 	}
 }

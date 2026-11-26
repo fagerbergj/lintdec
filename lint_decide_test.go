@@ -42,8 +42,11 @@ func TestFollowUpDoesNotRequeryAnsweredRules(t *testing.T) {
 			// Omit todo-no-owner on first call; answer comment-long.
 			content = `{"comment-long":{"lint":false}}`
 		} else {
-			user := req.Messages[len(req.Messages)-1].Content
-			if strings.Contains(user, "comment-long") || !strings.Contains(user, "todo-no-owner") {
+			user := ""
+			if len(req.Messages) > 0 {
+				user = req.Messages[len(req.Messages)-1].Content
+			}
+			if user == "" || strings.Contains(user, "comment-long") || !strings.Contains(user, "todo-no-owner") {
 				t.Errorf("follow-up must ask only for missing rule, got prompt:\n%s", user)
 			}
 			// Obey follow-up: reply with ONLY the missing rule.

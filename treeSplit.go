@@ -227,6 +227,7 @@ func isUnitStart(n *sitter.Node, cfg tsCfg, src []byte) bool {
 	return kindForNode(n, cfg, src) != ""
 }
 
+// attachesDoc reports whether c sits on the line immediately above a lintable sibling unit.
 func attachesDoc(c *sitter.Node, cfg tsCfg, src []byte) bool {
 	next := c.NextSibling()
 	return next != nil && isUnitStart(next, cfg, src) && c.EndPoint().Row+1 == next.StartPoint().Row
