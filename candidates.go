@@ -317,7 +317,7 @@ func candidateUnits(u Unit, header, heading, outline string) []Unit {
 	return slices.Clip(out)
 }
 
-var listItem = regexp.MustCompile(`^(\s*)(?:[-*+]|\d+[.)])\s+(.*)$`)
+var listItem = regexp.MustCompile(`^(\s*)(?:([-*+])|(\d+[.)]))\s+(.*)$`)
 
 // itemShape: how a list item opens (link, bold label, code, "Label:") and what grammar follows,
 // so lists whose items all share one shape are never asked about.
@@ -373,30 +373,91 @@ func openingClass(tag string) string {
 	return firstNonEmpty(openingClasses[tag], "other")
 }
 
+type listEntry struct {
+	start, end int
+	lines      []string
+	bodies     []string
+}
+
+// CommonMark tab stop width used when comparing mixed tab/space list indentation.
+const tabColumns = 4
+
+func indentWidth(ws string) int {
+	w := 0
+	for _, r := range ws {
+		if r == '\t' {
+			w += tabColumns
+		} else {
+			w++
+		}
+	}
+	return w
+}
+
+// topLevelItems groups a Markdown list into its top-level items (preserving nested
+// lines under their parent). When numberedOnly is true, only numbered items start entries.
+func topLevelItems(text string, numberedOnly bool) []listEntry {
+	var out []listEntry
+	indent := -1
+	ls := strings.Split(text, "\n")
+	for i, l := range ls {
+		m := listItem.FindStringSubmatch(l)
+		isItem := m != nil && (!numberedOnly || m[3] != "")
+		if isItem && (indent < 0 || indentWidth(m[1]) <= indent) {
+			indent = indentWidth(m[1])
+			if len(out) > 0 {
+				out[len(out)-1].end = i - 1
+			}
+			out = append(out, listEntry{start: i, lines: []string{l}, bodies: []string{m[4]}})
+		} else if len(out) > 0 {
+			last := &out[len(out)-1]
+			last.lines = append(last.lines, l)
+			last.bodies = append(last.bodies, strings.TrimSpace(l))
+		}
+	}
+	if len(out) > 0 {
+		out[len(out)-1].end = len(ls) - 1
+	}
+	return out
+}
+
 // mixedList: a copy of a list unit for list-shape rules, only when its top-level items differ in shape.
 func mixedList(u Unit) (Unit, bool) {
-	var shapes []string
-	indent := -1
-	var cur []string
-	flush := func() {
-		if cur != nil {
-			shapes = append(shapes, itemShape(strings.Join(cur, " ")))
-		}
+	items := topLevelItems(u.Text, false)
+	shapes := make([]string, 0, len(items))
+	for _, it := range items {
+		shapes = append(shapes, itemShape(strings.Join(it.bodies, " ")))
 	}
-	for _, l := range strings.Split(u.Text, "\n") {
-		m := listItem.FindStringSubmatch(l)
-		if m != nil && (indent < 0 || len(m[1]) <= indent) {
-			indent = len(m[1])
-			flush()
-			cur = []string{m[2]}
-		} else if cur != nil {
-			cur = append(cur, strings.TrimSpace(l))
-		}
-	}
-	flush()
 	if len(shapes) < 2 || len(slices.Compact(slices.Sorted(slices.Values(shapes)))) < 2 {
 		return Unit{}, false
 	}
 	u.Kind = "MixedList"
 	return u, true
+}
+
+// stepUnits splits a Steps block into one Step unit per top-level numbered item,
+// anchored to its own line span with the full list in Context for the veto check.
+func stepUnits(u Unit) []Unit {
+	items := topLevelItems(u.Text, true)
+	lastLine := strings.Count(u.Text, "\n")
+	// Inherited block-level headers (HEADING, PREVIOUS BLOCK, POSITION) apply to every step;
+	// NEXT LINE follows the whole list, so relabel it for non-final steps before appending LIST.
+	nonFinalCtx := u.Context
+	if i := strings.LastIndex(nonFinalCtx, "\nNEXT LINE: "); i >= 0 {
+		nonFinalCtx = nonFinalCtx[:i] + "\nAFTER THE LIST: " + nonFinalCtx[i+len("\nNEXT LINE: "):]
+	}
+	listSuffix := "\nLIST:\n" + u.Text
+	out := make([]Unit, 0, len(items))
+	for _, it := range items {
+		baseCtx := u.Context
+		if it.end < lastLine {
+			baseCtx = nonFinalCtx
+		}
+		out = append(out, Unit{
+			Kind: "Step", File: u.File,
+			Start: u.Start + it.start, End: u.Start + it.end,
+			Text: strings.Join(it.lines, "\n"), Context: baseCtx + listSuffix,
+		})
+	}
+	return out
 }

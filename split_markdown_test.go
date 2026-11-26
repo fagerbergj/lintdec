@@ -54,7 +54,7 @@ func span(u Unit) [2]int { return [2]int{u.Start, u.End} }
 func TestSplitMarkdownBlocks(t *testing.T) {
 	us := splitMarkdown("guide.md", []byte(mdFixture))
 	got := map[string][][2]int{}
-	for _, kind := range []string{"Paragraph", "Bullet", "Steps", "Table", "Section", "Document"} {
+	for _, kind := range []string{"Paragraph", "Bullet", "Steps", "Step", "Table", "Section", "Document"} {
 		for _, u := range unitsOf(kind, us) {
 			got[kind] = append(got[kind], span(u))
 		}
@@ -64,6 +64,7 @@ func TestSplitMarkdownBlocks(t *testing.T) {
 		"Paragraph": {{7, 7}, {11, 11}, {34, 34}},
 		"Bullet":    {{18, 19}},
 		"Steps":     {{23, 24}},
+		"Step":      {{23, 23}, {24, 24}},
 		"Table":     {{38, 40}},
 		// Install and Verify end before Notes, trailing blanks trimmed; Notes (TBD) is a placeholder
 		"Section":  {{9, 30}, {21, 30}, {36, 40}},
@@ -213,5 +214,29 @@ func TestWordyPhraseAnchorsToItsLine(t *testing.T) {
 	got := unitsOf("WordyPhrase", candidateUnits(u, "", "", ""))
 	if len(got) != 1 || !strings.Contains(got[0].Text, "⟦is able to⟧") || got[0].Start != 12 || got[0].End != 12 {
 		t.Fatalf("wordy phrase units = %+v, want one on line 12", got)
+	}
+}
+
+func TestStepUnitsKeepExactLinesAndNesting(t *testing.T) {
+	md := "# Guide\n\n## Run\n\n  1. Open the panel\n     and select a host.\n\t1. tab-indented sub-step\n  2. The build starts automatically.\n\n```sh\necho done\n```\n"
+	steps := unitsOf("Step", splitMarkdown("run.md", []byte(md)))
+	if len(steps) != 2 {
+		t.Fatalf("want 2 top-level Step units, got %d: %+v", len(steps), steps)
+	}
+	if steps[0].Start != 5 || steps[0].End != 7 || !strings.Contains(steps[0].Text, "tab-indented sub-step") {
+		t.Errorf("first step span/text wrong: %+v", steps[0])
+	}
+	if !strings.Contains(steps[0].Context, "AFTER THE LIST: ```sh") || strings.Contains(steps[0].Context, "\nNEXT LINE:") {
+		t.Errorf("non-final step should relabel list NEXT LINE:\n%s", steps[0].Context)
+	}
+	if steps[1].Start != 8 || steps[1].End != 8 || !strings.Contains(steps[1].Context, "NEXT LINE: ```sh") || !strings.Contains(steps[1].Context, "LIST:\n  1. Open the panel") {
+		t.Errorf("final step span/context wrong: %+v", steps[1])
+	}
+}
+
+func TestStepRuleTargetsStepUnits(t *testing.T) {
+	r, ok := findRule("md-step-not-command")
+	if !ok || !ruleApplies(r, "Step") || ruleApplies(r, "Steps") {
+		t.Fatalf("md-step-not-command Kinds = %v, want [Step]", r.Kinds)
 	}
 }
