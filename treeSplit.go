@@ -409,14 +409,18 @@ func isFnExpr(n *sitter.Node) bool {
 	return false
 }
 
-// unitDeclName returns the declared function/variable name of a unit node.
+// unitDeclName returns the declared name of a top-level function/variable unit,
+// or "" for methods/constructors that are only reachable through a receiver.
 func unitDeclName(n *sitter.Node, src []byte) string {
 	if n.Type() == "export_statement" {
 		if inner := innerDecl(n); inner != nil {
 			n = inner
 		}
 	}
-	if n.Type() == "lexical_declaration" {
+	switch n.Type() {
+	case "method_definition", "method_declaration", "constructor_declaration":
+		return ""
+	case "lexical_declaration":
 		for i, count := 0, int(n.NamedChildCount()); i < count; i++ {
 			c := n.NamedChild(i)
 			if c.Type() == "variable_declarator" && isFnExpr(c.ChildByFieldName("value")) {
@@ -426,6 +430,12 @@ func unitDeclName(n *sitter.Node, src []byte) string {
 			}
 		}
 		return ""
+	}
+	if id := n.ChildByFieldName("name"); id != nil {
+		return id.Content(src)
+	}
+	if decl := n.ChildByFieldName("declarator"); decl != nil {
+		return funcName(decl, src)
 	}
 	return funcName(n, src)
 }

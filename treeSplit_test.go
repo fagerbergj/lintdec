@@ -233,6 +233,19 @@ func TestRun(t *testing.T) { fakeWait() }
 		}
 	}
 
+	// Class methods are excluded from the top-level helper pool.
+	clsSrc := `class Draft { render() { return 'class-method'; } }
+function render() { return 'top-level'; }
+test('renders', () => { expect(render()).toBe('top-level'); });
+`
+	for _, u := range splitFile("cls.test.ts", []byte(clsSrc)) {
+		if u.Kind == "TestFunction" {
+			if !strings.Contains(u.Context, "top-level") || strings.Contains(u.Context, "class-method") {
+				t.Errorf("class method should not attach as top-level helper:\n%s", u.Context)
+			}
+		}
+	}
+
 	// Budget caps: >30-line helper skipped; total helper context capped at 50 lines.
 	body := strings.Repeat("  const x = 1;\n", 26)
 	capSrc := "function hOne() {\n" + body + "}\nfunction hTwo() {\n" + body + "}\nfunction huge() {\n" + strings.Repeat("  const y = 2;\n", 31) + "}\ntest('caps', () => { hOne(); hTwo(); huge(); });\n"
@@ -261,8 +274,8 @@ export function demo() { return 1; }
 
 	goSrc := "package p\nconst x = 1\nfunc f() {} // short trailing note\n"
 	for _, u := range splitGo("trail.go", []byte(goSrc)) {
-		if u.Kind == "Comment" && strings.TrimSpace(u.Context) == "" {
-			t.Errorf("single-line Go trailing comment got empty context")
+		if u.Kind == "Comment" && !strings.Contains(u.Context, "const x = 1") {
+			t.Errorf("single-line Go trailing comment lost nearby context:\n%s", u.Context)
 		}
 	}
 }

@@ -63,7 +63,7 @@ var rules = []Rule{
 	{"comment-long", "comment longer than it earns", []string{"Comment"}, "whole",
 		"The comment runs into a multi-paragraph essay, or turns a short note into a long passage, where a decision record, a doc link, or nothing would do.", ""},
 	{"comment-tautology", "comment restates the code", []string{"Comment"}, "whole",
-		"The comment merely repeats what the adjacent code already states directly, adding no reason, constraint, or non-obvious behavior.", ""},
+		"The comment merely repeats what the adjacent code already states directly, adding no reason, constraint, or non-obvious behavior. For pure name restatement without narrating the body, comment-restates-name is the rule.", ""},
 	{"comment-excuse", "apology or deferral for a code smell", []string{"Comment"}, "whole",
 		"The comment apologizes for or defends the code, or defers a known problem, without naming an owner, a ticket, or a concrete plan.", ""},
 	{"comment-contradicts-code", "comment contradicts the code it describes", []string{"Comment"}, "whole",

@@ -216,9 +216,12 @@ func appendHelperContext(u *Unit, helpers []testHelper) {
 
 func numberedLines(text string, start int) string {
 	ls := strings.Split(text, "\n")
-	out := make([]string, len(ls))
+	out := make([]string, 0, len(ls))
 	for i, l := range ls {
-		out[i] = fmt.Sprintf("%d\t%s", start+i, l)
+		if strings.TrimSpace(l) == "" {
+			continue
+		}
+		out = append(out, fmt.Sprintf("%d\t%s", start+i, l))
 	}
 	return strings.Join(out, "\n")
 }
