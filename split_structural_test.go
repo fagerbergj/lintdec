@@ -102,6 +102,40 @@ func TestDirectiveIncludesPrecedingRationaleComment(t *testing.T) {
 	}
 }
 
+func TestPrecedingRationaleStopConditions(t *testing.T) {
+	cases := []struct {
+		name string
+		u    Unit
+		want string
+	}{
+		{"blank line breaks", Unit{Start: 4, Context: "2\t# rationale\n5\tcmd"}, ""},
+		{"code line breaks", Unit{Start: 4, Context: "2\t# rationale\n3\tx=1\n5\tcmd"}, ""},
+		{"tool directive breaks", Unit{Start: 4, Context: "2\t# rationale\n3\t# shellcheck source=a.sh\n5\tcmd"}, ""},
+		{"outside 8-line window", Unit{Start: 12, Context: "2\t# stale rationale\n13\tcmd"}, ""},
+	}
+	for _, c := range cases {
+		if got := precedingRationale(c.u); got != c.want {
+			t.Errorf("%s: precedingRationale = %q, want %q", c.name, got, c.want)
+		}
+	}
+	// In Go, adjacent comment lines merge into one Comment group (stays Comment when >5 words);
+	// a blank-separated directive stays Directive and keeps +-8 lines in Context via goCommentContext.
+	goSrc := "package p\n\n// Long prose rationale explaining why shadowing is deliberate here.\n//nolint:govet\nfunc a() {}\n\n// Reason in separate group.\n\n//nolint:errcheck\nfunc b() {}\n"
+	units := filterComments(splitFile("sample.go", []byte(goSrc)))
+	var sawMergedComment, sawDirWithCtx bool
+	for _, u := range units {
+		if u.Kind == "Comment" && strings.Contains(u.Text, "nolint:govet") {
+			sawMergedComment = true
+		}
+		if u.Kind == "Directive" && strings.Contains(u.Text, "nolint:errcheck") && strings.Contains(u.Context, "Reason in separate group.") {
+			sawDirWithCtx = true
+		}
+	}
+	if !sawMergedComment || !sawDirWithCtx {
+		t.Fatalf("expected merged Go Comment and blank-separated Directive with Context, got: %+v", units)
+	}
+}
+
 func TestSplitFileLintConfig(t *testing.T) {
 	for path, want := range map[string]bool{
 		"eslint.config.mjs":              true,
@@ -109,6 +143,8 @@ func TestSplitFileLintConfig(t *testing.T) {
 		"biome.json":                     true,
 		"ruff.toml":                      true,
 		".golangci.yml":                  true,
+		".golangci.toml":                 true,
+		".rubocop.yml":                   true,
 		"lintdec.yaml":                   true,
 		".github/workflows/lintdec.yaml": false,
 		"main.go":                        false,
@@ -117,9 +153,22 @@ func TestSplitFileLintConfig(t *testing.T) {
 			t.Errorf("isLintConfig(%q) = %v, want %v", path, got, want)
 		}
 	}
-	units := splitFile("eslint.config.mjs", []byte("export default [{ rules: { 'no-unused-vars': 'off' } }];\n"))
-	if len(units) != 1 || units[0].Kind != "LintConfig" || units[0].Start != 1 || units[0].End != 1 {
-		t.Fatalf("expected single LintConfig unit, got %+v", units)
+	yamlUnits := splitFile("lintdec.yaml", []byte("off:\n  - swallowed-error\n"))
+	if len(yamlUnits) != 1 || yamlUnits[0].Kind != "LintConfig" || yamlUnits[0].Start != 1 || yamlUnits[0].End != 2 {
+		t.Fatalf("expected single LintConfig unit for yaml, got %+v", yamlUnits)
+	}
+	jsUnits := splitFile("eslint.config.mjs", []byte("// TODO fix\nexport default [{ rules: { 'no-unused-vars': 'off' } }];\n"))
+	var hasLC, hasComment bool
+	for _, u := range jsUnits {
+		if u.Kind == "LintConfig" {
+			hasLC = true
+		}
+		if u.Kind == "Comment" {
+			hasComment = true
+		}
+	}
+	if !hasLC || !hasComment {
+		t.Fatalf("JS lint config must emit LintConfig plus tree-sitter units, got %+v", jsUnits)
 	}
 	if empty := splitFile("lintdec.yaml", []byte("   \n")); empty != nil {
 		t.Fatalf("expected nil for blank lint config, got %+v", empty)

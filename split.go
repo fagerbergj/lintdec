@@ -15,7 +15,7 @@ import (
 // Unit is one lintable slice of a file. Context is reference-only text the judgment
 // needs: surrounding code for comments, the doc comment for declarations.
 type Unit struct {
-	Kind         string // TestFunction, Function, Script, Interface, Comment, Directive, Paragraph, Bullet, File
+	Kind         string // TestFunction, Function, Script, Interface, Comment, Directive, LintConfig, Paragraph, Bullet, File
 	File         string
 	Start        int
 	End          int
@@ -34,7 +34,8 @@ var lintConfigNames = map[string]bool{
 	".eslintrc": true, ".eslintrc.json": true, ".eslintrc.js": true, ".eslintrc.cjs": true, ".eslintrc.yml": true, ".eslintrc.yaml": true,
 	"biome.json": true, "biome.jsonc": true,
 	"ruff.toml": true, ".ruff.toml": true,
-	".golangci.yml": true, ".golangci.yaml": true,
+	".golangci.yml": true, ".golangci.yaml": true, ".golangci.toml": true, ".golangci.json": true,
+	".rubocop.yml": true, ".rubocop.yaml": true,
 	"lintdec.yaml": true, "lintdec.yml": true,
 	"clippy.toml": true, ".clippy.toml": true,
 	".shellcheckrc": true,
@@ -49,14 +50,18 @@ func isLintConfig(filePath string) bool {
 }
 
 func splitFile(filePath string, src []byte) []Unit {
-	if isLintConfig(filePath) {
-		text := strings.TrimRight(string(src), "\n")
-		if strings.TrimSpace(text) == "" {
-			return nil
-		}
-		return []Unit{{Kind: "LintConfig", File: filePath, Start: 1, End: strings.Count(text, "\n") + 1, Text: text}}
-	}
 	ext := extOf(filePath)
+	var units []Unit
+	if isLintConfig(filePath) {
+		if text := strings.TrimRight(string(src), "\n"); strings.TrimSpace(text) != "" {
+			units = append(units, Unit{Kind: "LintConfig", File: filePath, Start: 1, End: strings.Count(text, "\n") + 1, Text: text})
+		}
+		// JS/TS linter configs also run through tree-sitter so default-on comment/file rules keep covering them.
+		if key, ok := tsExt[ext]; ok {
+			units = append(units, attachTestHelpers(splitTree(filePath, src, tsLangs[key]))...)
+		}
+		return units
+	}
 	switch ext {
 	case ".go":
 		return attachTestHelpers(splitGo(filePath, src))
@@ -171,8 +176,8 @@ func specDoc(d *ast.GenDecl, ts *ast.TypeSpec) *ast.CommentGroup {
 // goCommentContext: a comment in or above a bounded declaration sees that
 // declaration alone; directives keep +-8 lines so preceding rationales stay visible.
 func goCommentContext(fset *token.FileSet, f *ast.File, lines []string, g *ast.CommentGroup) string {
-	s, e := fset.Position(g.Pos()).Line, fset.Position(g.End()).Line
-	if isSuppressionComment(Unit{Kind: "Comment", Text: strings.Join(lines[s-1:e], "\n")}) {
+	s, e := fset.Position(g.Pos()).Line, min(fset.Position(g.End()).Line, len(lines))
+	if s >= 1 && s <= e && isSuppressionComment(Unit{Kind: "Comment", Text: strings.Join(lines[s-1:e], "\n")}) {
 		return commentContext(lines, s, e)
 	}
 	for _, d := range f.Decls {

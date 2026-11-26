@@ -20,9 +20,9 @@ var (
 	testMockRe         = regexp.MustCompile(`(?i)\b(?:vi\.fn|vi\.mock|vi\.spyOn|jest\.fn|jest\.mock|jest\.spyOn|MagicMock|create_autospec|sinon\.|gomock|mockk|Mockito|unittest\.mock)\b|\bpatch\s*\(`)
 	testSharedStateRe  = regexp.MustCompile(`(?i)(?:os\.(?:Set|Unset)env|process\.env\.\w+\s*=\s*[^=\s]|process\.env\[[^\]]+\]\s*=\s*[^=\s]|delete\s+process\.env|os\.environ\[[^\]]+\]\s*\+?=[^=]|del\s+os\.environ|monkeypatch\.setenv|os\.Chdir|process\.chdir|(?:/tmp/|localhost:\d|127\.0\.0\.1:\d)|(?:os\.)?writeFile(?:Sync)?\s*\(\s*["'` + "`" + `])`)
 	remediationHeadRe  = regexp.MustCompile(`(?i)^#{1,6}\s+.*(?:troubleshoot|error|warning|failure|debug|known issues|faq|caveat)`)
-	retryRe            = regexp.MustCompile(`(?i)\b(?:retry|retries|retried|backoff|maxRetries|maxAttempts|retryCount|retryDelay)\b|\bfor\s*\{|\bwhile\s*\(\s*(?:true|1)\s*\)|\bwhile\s+True\s*:`)
+	retryRe            = regexp.MustCompile(`(?i)\b(?:retry|retries|retried|backoff|maxRetries|maxAttempts|retryCount|retryDelay)\b|\bfor\s*\{|\bfor\s*\(\s*;\s*;\s*\)|\bwhile\s*\(\s*(?:true|1)\s*\)|\bwhile\s+True\s*:|\bloop\s*\{`)
 	handRolledStdlibRe = regexp.MustCompile(`(?i)(?:base64|uuid|guid|csv|urlencode|querystring|query_?string|parse_?query|escape_?html|unescape_?html|html_?escape|parse_?iso|iso_?8601|deep_?equal|parse_?args|parse_?flags|os\.Args|process\.argv|sys\.argv|0123456789abcdef|ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789|&amp;|&lt;|&gt;)`)
-	lintConfigWeakRe   = regexp.MustCompile(`(?i)(?:\boff\b|\bwarn\b|\bdisable\b|\bignore\b|\bignores\b|\bexclude\b|\bexclusions\b|no-?check)`)
+	lintConfigWeakRe   = regexp.MustCompile(`(?i)(?:\boff\b|\bwarn(?:ing)?\b|\bdisabl(?:e|ed)\b|\bignore[sd]?\b|\bexclude|no-?check|[:,]\s*[01]\b)`)
 )
 
 // ruleFilters maps rule IDs to deterministic pre-filters; suppression-no-reason filters by construction via Directive kind.

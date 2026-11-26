@@ -83,6 +83,8 @@ func TestRuleEligibleDeterministicFilters(t *testing.T) {
 		{"md-no-remediation", Unit{Kind: "Section", Text: "## Installation\n\nRun npm ci."}, false},
 
 		{"unbounded-retry", Unit{Kind: "Function", Text: "func fetch() { for { resp, err := get(); if err == nil { return } } }"}, true},
+		{"unbounded-retry", Unit{Kind: "Function", Text: "function poll() { for (;;) { check(); } }"}, true},
+		{"unbounded-retry", Unit{Kind: "Function", Text: "fn poll() { loop { check(); } }"}, true},
 		{"unbounded-retry", Unit{Kind: "Function", Text: "function call(maxRetries: number) { return retry(call); }"}, true},
 		{"unbounded-retry", Unit{Kind: "Function", Text: "func add(a, b int) int { return a + b }"}, false},
 
@@ -91,6 +93,9 @@ func TestRuleEligibleDeterministicFilters(t *testing.T) {
 		{"hand-rolled-stdlib", Unit{Kind: "Function", Start: 1, End: 15, Text: "function sumPrices(items) {\n  let n = 0;\n  return n;\n}"}, false},
 
 		{"lint-config-weakened", Unit{Kind: "LintConfig", Text: `{"rules": {"no-unused-vars": "off"}}`}, true},
+		{"lint-config-weakened", Unit{Kind: "LintConfig", Text: `{"rules": {"no-unused-vars": 0}}`}, true},
+		{"lint-config-weakened", Unit{Kind: "LintConfig", Text: "severity: warning\n"}, true},
+		{"lint-config-weakened", Unit{Kind: "LintConfig", Text: "disabled: [gosec]\n"}, true},
 		{"lint-config-weakened", Unit{Kind: "LintConfig", Text: `{"rules": {"no-unused-vars": "error"}}`}, false},
 	}
 	for _, c := range cases {
@@ -135,5 +140,22 @@ func TestBuildJobsSkipsIneligibleRules(t *testing.T) {
 	u := Unit{Kind: "Comment", File: "a.go", Start: 3, End: 4, Text: "// one\n// two"}
 	if js := buildJobs(u, []Rule{long}, []string{"", "", "// one", "// two"}); js != nil {
 		t.Errorf("a 2-line comment must skip comment-long: %+v", js)
+	}
+	lcRule, _ := findRule("lint-config-weakened")
+	retryRule, _ := findRule("unbounded-retry")
+	stdlibRule, _ := findRule("hand-rolled-stdlib")
+	if js := buildJobs(Unit{Kind: "Function", Start: 1, End: 10, Text: "func add(a, b int) int { return a + b }"}, []Rule{retryRule, stdlibRule}, nil); js != nil {
+		t.Errorf("clean function must skip retry and stdlib rules: %+v", js)
+	}
+	// Oversized LintConfig (>200 lines) must bypass digestFor so deep off/ignore entries stay visible.
+	lines := make([]string, 230)
+	for i := range lines {
+		lines[i] = "  # padding"
+	}
+	lines[220] = `  "no-unused-vars": "off"`
+	big := Unit{Kind: "LintConfig", File: "eslint.config.mjs", Start: 1, End: len(lines), Text: strings.Join(lines, "\n")}
+	js := buildJobs(big, []Rule{lcRule}, lines)
+	if len(js) != 1 || !strings.Contains(js[0].unit.Text, `"no-unused-vars": "off"`) {
+		t.Fatalf("oversized LintConfig must stay raw in buildJobs, got: %+v", js)
 	}
 }

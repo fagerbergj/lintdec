@@ -212,7 +212,7 @@ func buildJobs(u Unit, active []Rule, lines []string) []job {
 	if len(app) == 0 {
 		return nil
 	}
-	if u.Kind == "File" || u.Kind == "Section" || u.Kind == "Document" || u.End-u.Start+1 <= rawBudgetLines {
+	if u.Kind == "File" || u.Kind == "Section" || u.Kind == "Document" || u.Kind == "LintConfig" || u.End-u.Start+1 <= rawBudgetLines {
 		return []job{{u, app}}
 	}
 	var local, whole []Rule
