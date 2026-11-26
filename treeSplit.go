@@ -397,9 +397,12 @@ func collectComments(root *sitter.Node, path string, cfg tsCfg, src []byte, line
 	return out
 }
 
-// treeCommentContext mirrors goCommentContext: a full-line comment directly above
-// or any comment inside a bounded declaration sees that declaration alone.
+// treeCommentContext mirrors goCommentContext; directives keep +-8 lines above
+// and below so preceding rationale comments stay visible to suppression-no-reason.
 func treeCommentContext(lines []string, last *sitter.Node, s, e int, cfg tsCfg, src []byte, fullLine bool) string {
+	if isDirectiveComment(last, src) {
+		return commentContext(lines, s, e)
+	}
 	nxt := last.NextSibling()
 	if nxt != nil && fullLine && isUnitStart(nxt, cfg, src) && int(nxt.StartPoint().Row)+1 == e+1 {
 		if de := min(int(nxt.EndPoint().Row)+1, len(lines)); de-s <= rawBudgetLines {

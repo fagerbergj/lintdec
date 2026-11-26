@@ -15,7 +15,7 @@ import (
 // Unit is one lintable slice of a file. Context is reference-only text the judgment
 // needs: surrounding code for comments, the doc comment for declarations.
 type Unit struct {
-	Kind         string // TestFunction, Function, Script, Interface, Comment, Directive, Paragraph, Bullet, File
+	Kind         string // TestFunction, Function, Script, Interface, Comment, Directive, LintConfig, Paragraph, Bullet, File
 	File         string
 	Start        int
 	End          int
@@ -29,8 +29,39 @@ type Unit struct {
 // local rules get windows and whole rules get a digest.
 const rawBudgetLines = 200
 
+var lintConfigNames = map[string]bool{
+	"eslint.config.js": true, "eslint.config.mjs": true, "eslint.config.cjs": true, "eslint.config.ts": true,
+	".eslintrc": true, ".eslintrc.json": true, ".eslintrc.js": true, ".eslintrc.cjs": true, ".eslintrc.yml": true, ".eslintrc.yaml": true,
+	"biome.json": true, "biome.jsonc": true,
+	"ruff.toml": true, ".ruff.toml": true,
+	".golangci.yml": true, ".golangci.yaml": true, ".golangci.toml": true, ".golangci.json": true,
+	".rubocop.yml": true, ".rubocop.yaml": true,
+	"lintdec.yaml": true, "lintdec.yml": true,
+	"clippy.toml": true, ".clippy.toml": true,
+	".shellcheckrc": true,
+}
+
+func isLintConfig(filePath string) bool {
+	p := strings.ReplaceAll(filePath, "\\", "/")
+	if strings.HasPrefix(p, ".github/workflows/") || strings.Contains(p, "/.github/workflows/") {
+		return false
+	}
+	return lintConfigNames[strings.ToLower(path.Base(p))]
+}
+
 func splitFile(filePath string, src []byte) []Unit {
 	ext := extOf(filePath)
+	var units []Unit
+	if isLintConfig(filePath) {
+		if text := strings.TrimRight(string(src), "\n"); strings.TrimSpace(text) != "" {
+			units = append(units, Unit{Kind: "LintConfig", File: filePath, Start: 1, End: strings.Count(text, "\n") + 1, Text: text})
+		}
+		// JS/TS linter configs also run through tree-sitter so default-on comment/file rules keep covering them.
+		if key, ok := tsExt[ext]; ok {
+			units = append(units, attachTestHelpers(splitTree(filePath, src, tsLangs[key]))...)
+		}
+		return units
+	}
 	switch ext {
 	case ".go":
 		return attachTestHelpers(splitGo(filePath, src))
@@ -143,9 +174,12 @@ func specDoc(d *ast.GenDecl, ts *ast.TypeSpec) *ast.CommentGroup {
 }
 
 // goCommentContext: a comment in or above a bounded declaration sees that
-// declaration alone so unrelated neighbors do not dilute doc-comment checks.
+// declaration alone; directives keep +-8 lines so preceding rationales stay visible.
 func goCommentContext(fset *token.FileSet, f *ast.File, lines []string, g *ast.CommentGroup) string {
-	s, e := fset.Position(g.Pos()).Line, fset.Position(g.End()).Line
+	s, e := fset.Position(g.Pos()).Line, min(fset.Position(g.End()).Line, len(lines))
+	if s >= 1 && s <= e && isSuppressionComment(Unit{Kind: "Comment", Text: strings.Join(lines[s-1:e], "\n")}) {
+		return commentContext(lines, s, e)
+	}
 	for _, d := range f.Decls {
 		start := d.Pos()
 		if fd, ok := d.(*ast.FuncDecl); ok && fd.Doc != nil {
@@ -565,9 +599,11 @@ func digestFor(u Unit, lines []string) string {
 }
 
 var (
-	commentMarker        = regexp.MustCompile(`^\s*(//+|#+|/\*+|\*+/?|--|;+|<!--|\{\s*/\*+)\s?`)
-	ruleLine             = regexp.MustCompile(`^[^\p{L}\p{N}]{3,}$`)
-	toolDirective        = regexp.MustCompile(`^(?:shellcheck|eslint|prettier-ignore|@ts-|nolint|NOLINT|noqa|go:\S|lint:\S|lintdec:ignore|pylint|type:\s*ignore|istanbul|c8 |biome-ignore|ktlint|tslint|jshint|NOSONAR|region|endregion)`)
+	commentMarker = regexp.MustCompile(`^\s*(//+|#+|/\*+|\*+/?|--|;+|<!--|\{\s*/\*+)\s?`)
+	ruleLine      = regexp.MustCompile(`^[^\p{L}\p{N}]{3,}$`)
+	toolDirective = regexp.MustCompile(`^(?:shellcheck|eslint|prettier-ignore|@ts-|nolint|NOLINT|noqa|go:\S|lint:\S|lintdec:ignore|pylint|type:\s*ignore|istanbul|c8 |biome-ignore|ktlint|tslint|jshint|NOSONAR|region|endregion)`)
+	// toolDirectiveAnyCase includes non-suppression directives like rubocop:enable so they drop as structural;
+	// suppressionAnyCase includes only disable/noqa forms that route to suppression-no-reason.
 	toolDirectiveAnyCase = regexp.MustCompile(`(?i)^(?:ruff:\s*noqa|flake8:\s*noqa|pragma\s+warning\s+disable|markdownlint-disable|rubocop:(?:disable|enable))`)
 	suppressionDirective = regexp.MustCompile(`^(?:eslint-disable|@ts-ignore|@ts-expect-error|nolint|NOLINT|noqa|type:\s*ignore|biome-ignore|pylint:\s*disable|ktlint-disable|NOSONAR|istanbul ignore|c8 ignore|shellcheck disable)`)
 	suppressionAnyCase   = regexp.MustCompile(`(?i)^(?:ruff:\s*noqa|flake8:\s*noqa|pragma\s+warning\s+disable|markdownlint-disable|rubocop:disable)`)
@@ -590,6 +626,46 @@ func isSuppressionComment(u Unit) bool {
 	return false
 }
 
+// precedingRationale returns contiguous non-directive comment lines immediately above u.Start
+// from numbered Context so preceding ShellCheck/Go/Python rationales travel in TARGET.
+func precedingRationale(u Unit) string {
+	if u.Start <= 1 || u.Context == "" {
+		return ""
+	}
+	byLine := map[int]string{}
+	for raw := range strings.SplitSeq(u.Context, "\n") {
+		numStr, body, ok := strings.Cut(raw, "\t")
+		if !ok {
+			continue
+		}
+		var ln int
+		if _, err := fmt.Sscanf(numStr, "%d", &ln); err == nil {
+			byLine[ln] = body
+		}
+	}
+	var lead []string
+	for ln := u.Start - 1; ln >= 1; ln-- {
+		body, ok := byLine[ln]
+		if !ok {
+			break
+		}
+		trimmed := strings.TrimSpace(body)
+		if strings.HasPrefix(trimmed, "#!") || !commentMarker.MatchString(body) {
+			break
+		}
+		inner := strings.TrimSpace(commentMarker.ReplaceAllString(body, ""))
+		if inner == "" || ruleLine.MatchString(inner) || isToolDirective(inner) {
+			break
+		}
+		lead = append(lead, body)
+	}
+	if len(lead) == 0 {
+		return ""
+	}
+	slices.Reverse(lead)
+	return strings.Join(lead, "\n")
+}
+
 // filterComments filters units in place: pure suppression directives become Directive units,
 // other structural banners/directives are dropped, and prose (including mixed prose+directive blocks) stays Comment.
 func filterComments(units []Unit) []Unit {
@@ -598,6 +674,9 @@ func filterComments(units []Unit) []Unit {
 		if structuralComment(u) {
 			if isSuppressionComment(u) {
 				u.Kind = "Directive"
+				if lead := precedingRationale(u); lead != "" {
+					u.Text = lead + "\n" + u.Text
+				}
 				out = append(out, u)
 			}
 			continue

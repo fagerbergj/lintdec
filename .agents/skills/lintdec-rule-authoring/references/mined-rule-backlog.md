@@ -1,12 +1,10 @@
 # Mined Candidate Rules Backlog
 
-Candidate rules mined from published software-maintainability, testability, static-analysis, and repository-health primary sources (Google SWE Book, TestSmells & TSR Catalog, OpenSSF Scorecard, Google Tricorder, `eslint-comments` / Hu et al. FSE 2025, Refactoring.Guru, Martin Fowler, Diátaxis), filtered through the 5 admission gates against `lintdec`'s current **42 rules** (`2d21140`).
+Candidate rules mined from published software-maintainability, testability, static-analysis, meta-linting, AI-slop, and repository-health primary sources (Google SWE Book Ch. 11 & Ch. 20, TestSmells & TSR Catalog, OpenSSF Scorecard, Google Tricorder, `eslint-comments` / Hu et al. FSE 2025, Stoica et al. SOSP 2024, Go `modernize`, Ruff `FURB`, Refactoring.Guru, Martin Fowler, Diátaxis), filtered through the 5 admission gates against `lintdec`'s current **45 rules**.
 
 ---
 
-## Shipped in `#31` (`2d21140`)
-
-Five mined rules passed the blind synthetic recall lab and 4-repo dogfood (`99.0%` combined pre-filter reduction; details in `tuning-fps.md`):
+## Shipped Rules
 
 | Rule | Status | Kind | Source |
 |---|---|---|---|
@@ -15,14 +13,16 @@ Five mined rules passed the blind synthetic recall lab and 4-repo dogfood (`99.0
 | `test-ignored-no-reason` | Opt-in (`warning`) | `TestFunction` | TestSmells (`https://testsmells.org/pages/testsmells.html`) & TSR Catalog (`https://tsr-catalog.readthedocs.io/en/latest/smells/ignored-test.html`) |
 | `test-over-mocked` | Opt-in (`warning`) | `TestFunction` | Google SWE Book Ch. 11 (`https://abseil.io/resources/swe-book/html/ch11.html`) |
 | `md-no-remediation` | Opt-in (`warning`) | `Section` | Google Tricorder (`https://research.google/pubs/tricorder-building-a-program-analysis-ecosystem/`) & OpenSSF Scorecard (`https://github.com/ossf/scorecard/blob/main/docs/checks.md`) |
+| `lint-config-weakened` | Opt-in (`warning`) | `LintConfig` | Google SWE Book Ch. 20 (`https://abseil.io/resources/swe-book/html/ch20.html`) & ESLint Rules/Ignore (`https://eslint.org/docs/latest/use/configure/rules`) |
+| `hand-rolled-stdlib` | Opt-in (`warning`) | `Function` | Go `modernize` (`https://pkg.go.dev/golang.org/x/tools/go/analysis/passes/modernize`) & Ruff `FURB` (`https://docs.astral.sh/ruff/rules/`) |
+| `unbounded-retry` | Opt-in (`error`) | `Function`, `Script` | Stoica et al., SOSP 2024 (`https://jonathanmace.github.io/papers/stoica2024retry.pdf`) |
 
 ---
 
-## Tier B — Remaining Candidates (Needs Splitter Work or Scope Validation)
+## Tier B — Remaining Candidates (Needs Scope Validation)
 
 | Candidate | Kind | Source | Why Tier B |
 |---|---|---|---|
-| `data-clump` | `Interface` *(or `File` with param skeletons)* | Refactoring.Guru, Data Clumps (`https://refactoring.guru/smells/data-clumps`) | `Interface` works today (cheap, few units); `File` skeletons currently omit parameter lists, so file-wide clumps need a splitter extension. |
 | `md-undocumented-env` | `Document` / `Section` | Twelve-Factor / Dev Containers (`https://containers.dev/`) | Pre-filter on `ENV_VAR=` / `$ENV_VAR` + setup heading; risk of false positives on snippets that intentionally point to `.env.example`. |
 | `md-missing-verification` | `Section` | Diátaxis How-to (`https://diataxis.fr/how-to-guides/`) | Pre-filter on setup/install headings with fenced shell blocks; borderline actionability on short 1-command install sections. |
 | `error-context-lost` | `Function`, `Script` | Go Code Review Comments (`https://go.dev/wiki/CodeReviewComments#handle-errors`) | Overlaps partially with `swallowed-error` (which already covers rethrows dropping cause); bare `"failed"` messages may be noisy without floor tuning. |
@@ -36,6 +36,9 @@ Documented here so future rule-mining passes do not re-propose them:
 | Research Signal | Why Rejected for `lintdec` | Where It Belongs |
 |---|---|---|
 | `flag-argument` — boolean parameters (Martin Fowler: `https://martinfowler.com/bliki/FlagArgument.html`, Refactoring.Guru: `https://refactoring.guru/smells/primitive-obsession`) | Passed synthetic lab (2/2, 0/2) but produced 66 false positives across 4 repos on normal single-boolean domain parameters (`isSoft`, `isSplitHand`, `dealerHitsSoft17`, `allowPort`, `reveal`); dropped before merge (`tuning-fps.md`). | API design review (or excluded) |
+| `thin-wrapper` — short pass-through functions (Go fix `newexpr`: `https://go.dev/blog/gofix`, AI-slop catalogues: `https://scanaislop.com/patterns/`) | Failed both cost (`2,279` decisions across 4 repos) and precision (false positive at `0.955` on an `io.Closer` interface method in synthetic lab; `tuning-fps.md`). | `go fix modernize` (`newexpr`) / code review |
+| `data-clump` — repeated parameters on `Interface` (Refactoring.Guru: `https://refactoring.guru/smells/data-clumps`) | Passed synthetic lab (1/1 `0.980`, 0/1 quiet) but hit 0/2 real precision in 4-repo dogfood on a 2-param keyring store and an already-bundled object store port (`tuning-fps.md`). | API design review |
+| Deterministic meta-linting & AST modernizers: unused suppressions (`https://eslint.org/docs/latest/use/suppressions`), unpruned baselines, dead ignore globs (`https://eslint.org/docs/latest/use/configure/ignore`), deprecated rules (`https://docs.astral.sh/ruff/rules/`), 1-line stdlib modernizers (`go fix modernize`, Ruff `UP`/`FURB`, `eslint-plugin-unicorn`, Clippy `manual_*`, ShellCheck `SC2012`/`SC2181`), ban-lists (`no-restricted-imports`, `TID251`, Clippy `disallowed-*`) | 100% deterministic AST/config checks with auto-fixes in native linters. | ESLint, Ruff, `go fix`, Clippy, ShellCheck, `sloplint` |
 | Unused vars/params/exports/files, unreachable code, empty functions, self-compare/assign (`tsc`, ESLint, `knip`: `https://knip.dev/`) | 100% deterministic AST/type/graph facts. | `tsc`, `eslint`, `knip`, `go vet` |
 | Cyclomatic/cognitive complexity, duplication (`jscpd`: `https://github.com/kucherenko/jscpd`), import cycles & layers (`ArchUnit`: `https://www.archunit.org/userguide/html/000_Index.html`) | Deterministic/metric-based; `complex-method` was already removed (`tuning-fps.md:91`). | `sloplint`, `jscpd`, `madge`, `dependency-cruiser`, `ArchUnit` |
 | Hardcoded ambient I/O / wall-clock / RNG in domain code (ESLint `no-restricted-imports`: `https://eslint.org/docs/latest/rules/no-restricted-imports`) | Without a declared domain-vs-adapter path map, single-function LLM checks false-positive on every CLI/entrypoint. | `no-restricted-imports`, `no-restricted-globals`, `ArchUnit` |

@@ -88,10 +88,13 @@ func commonAncestor(a, b string) (string, bool) {
 
 // defaultInclude returns globs for every language splitFile understands.
 func defaultInclude() []string {
-	out := make([]string, 0, len(tsExt)+3)
+	out := make([]string, 0, len(tsExt)+len(lintConfigNames)+3)
 	out = append(out, "*.go", "*.md", "*.markdown")
 	for ext := range tsExt {
 		out = append(out, "*"+ext)
+	}
+	for name := range lintConfigNames {
+		out = append(out, name)
 	}
 	slices.Sort(out)
 	return out
@@ -209,7 +212,7 @@ func buildJobs(u Unit, active []Rule, lines []string) []job {
 	if len(app) == 0 {
 		return nil
 	}
-	if u.Kind == "File" || u.Kind == "Section" || u.Kind == "Document" || u.End-u.Start+1 <= rawBudgetLines {
+	if u.Kind == "File" || u.Kind == "Section" || u.Kind == "Document" || u.Kind == "LintConfig" || u.End-u.Start+1 <= rawBudgetLines {
 		return []job{{u, app}}
 	}
 	var local, whole []Rule
