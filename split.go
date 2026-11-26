@@ -341,6 +341,9 @@ func addMarkdownStructure(path string, lines []string, units []Unit) []Unit {
 		if m, ok := mixedList(u); ok && u.Kind != "Paragraph" {
 			units = append(units, m)
 		}
+		if u.Kind == "Steps" {
+			units = append(units, stepUnits(u)...)
+		}
 	}
 	text := proseLines(lines)
 	units = append(units, sectionUnits(path, text, heads, header)...)

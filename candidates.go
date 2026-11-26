@@ -400,3 +400,38 @@ func mixedList(u Unit) (Unit, bool) {
 	u.Kind = "MixedList"
 	return u, true
 }
+
+var numberedItem = regexp.MustCompile(`^(\s*)\d+[.)]\s+`)
+
+// stepUnits splits a Steps block into one Step unit per top-level numbered item,
+// anchored to its own line span with the full list in Context for the veto check.
+func stepUnits(u Unit) []Unit {
+	var out []Unit
+	indent := -1
+	startOff := -1
+	var cur []string
+	ctx := u.Context + "\nLIST:\n" + u.Text
+	flush := func(endOff int) {
+		if cur == nil {
+			return
+		}
+		out = append(out, Unit{
+			Kind: "Step", File: u.File,
+			Start: u.Start + startOff, End: u.Start + endOff,
+			Text: strings.Join(cur, "\n"), Context: ctx,
+		})
+	}
+	ls := strings.Split(u.Text, "\n")
+	for i, l := range ls {
+		m := numberedItem.FindStringSubmatch(l)
+		if m != nil && (indent < 0 || len(m[1]) <= indent) {
+			indent = len(m[1])
+			flush(i - 1)
+			startOff, cur = i, []string{l}
+		} else if cur != nil {
+			cur = append(cur, l)
+		}
+	}
+	flush(len(ls) - 1)
+	return out
+}

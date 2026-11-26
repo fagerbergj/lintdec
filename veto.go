@@ -31,7 +31,7 @@ var ruleVetoes = map[string]string{
 	"md-dropped-words":          "Does the TARGET have only one reasonable reading, so terse wording leaves the reader nothing to guess, or is it a label, table cell, short list item, code reference, or reference entry?",
 	"md-topic-sentence":         "Does the paragraph have fewer than three sentences, or does its first sentence state or lead into the subject of the rest?",
 	"md-one-topic":              "Do all the sentences serve the paragraph's main point?",
-	"md-step-not-command":       "Is the list something other than steps the reader performs (for example principles, deliverables, test cases, or a description of what a system does), or is every step that does not start with a command verb a label for the code block or sub-steps under it, or the result of the step before it?",
+	"md-step-not-command":       "Is the list in CONTEXT something other than procedural steps the reader performs (for example principles, checklist topics, deliverables, or test cases), or is the TARGET step a label for a code block or sub-steps?",
 	"md-list-not-parallel":      "Do the items match in grammar and kind well enough that a reader would not notice a mismatch, for example all following the same label-then-detail pattern?",
 	"md-marketing":              "Is each strong adjective backed by a fact, number, or comparison in the same sentence or the one after it?",
 	"md-blames-reader":          "Does the text describe the problem or the fix without saying the reader was at fault?",
