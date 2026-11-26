@@ -57,7 +57,7 @@ def load_veto_config() -> tuple[dict[str, float], dict[str, float], float, str]:
     else:
         missing.append("vetoConfidence")
     if missing:
-        print(f"warning: {', '.join(missing)} not found in {veto_go}; using fallback mirror", file=sys.stderr)
+        print(f"warning: {', '.join(missing)} not found in {veto_go}; using fallback values for those", file=sys.stderr)
         return floors, cuts, default_cut, f"veto.go + fallback ({', '.join(missing)})"
     return floors, cuts, default_cut, "veto.go"
 
@@ -72,16 +72,32 @@ def is_reportable(finding: dict, floors: dict[str, float], cuts: dict[str, float
 
 def load_findings(path: str) -> list[dict]:
     rows = []
-    with open(path) as f:
-        for idx, raw in enumerate(f, 1):
-            line = raw.strip()
-            if not line:
-                continue
-            obj = json.loads(line)
-            if not isinstance(obj, dict) or "rule" not in obj:
-                raise ValueError(f"{path}:{idx}: expected JSONL finding object (use --out jsonl, not --out json)")
-            rows.append(obj)
+    try:
+        with open(path) as f:
+            for idx, raw in enumerate(f, 1):
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError as err:
+                    raise ValueError(f"{path}:{idx}: invalid JSON: {err}") from err
+                if not isinstance(obj, dict) or "rule" not in obj:
+                    raise ValueError(f"{path}:{idx}: expected JSONL finding object (use --out jsonl, not --out json)")
+                rows.append(obj)
+    except OSError as err:
+        raise ValueError(str(err)) from err
     return rows
+
+
+def load_manifest(path: str) -> object:
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except OSError as err:
+        raise ValueError(str(err)) from err
+    except json.JSONDecodeError as err:
+        raise ValueError(f"{path}: invalid JSON: {err}") from err
 
 
 def match_target(findings: list[dict], rule: str, file_suffix: str, line: int) -> list[dict]:
@@ -144,6 +160,13 @@ def validate_manifest(manifest: object) -> str | None:
     for rule, spec in sorted(manifest.items()):
         if not isinstance(spec, dict) or not isinstance(spec.get("loud"), list) or not spec["loud"]:
             return f"manifest: {rule!r} needs a non-empty 'loud' list"
+        for key in ("loud", "quiet"):
+            items = spec.get(key, [])
+            if not isinstance(items, list):
+                return f"manifest: {rule!r}.{key} must be a list"
+            for item in items:
+                if not isinstance(item, dict) or not isinstance(item.get("file"), str) or not isinstance(item.get("line"), int):
+                    return f"manifest: {rule!r}.{key} entries must have string 'file' and int 'line'"
     return None
 
 
@@ -153,11 +176,10 @@ def main() -> int:
         return 2
     try:
         findings = load_findings(sys.argv[1])
+        manifest = load_manifest(sys.argv[2])
     except ValueError as err:
         print(f"error: {err}", file=sys.stderr)
         return 2
-    with open(sys.argv[2]) as f:
-        manifest = json.load(f)
     if err := validate_manifest(manifest):
         print(f"error: {err}", file=sys.stderr)
         return 2
