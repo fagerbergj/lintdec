@@ -379,11 +379,14 @@ type listEntry struct {
 	bodies     []string
 }
 
+// CommonMark tab stop width used when comparing mixed tab/space list indentation.
+const tabColumns = 4
+
 func indentWidth(ws string) int {
 	w := 0
 	for _, r := range ws {
 		if r == '\t' {
-			w += 4
+			w += tabColumns
 		} else {
 			w++
 		}
@@ -437,18 +440,23 @@ func mixedList(u Unit) (Unit, bool) {
 func stepUnits(u Unit) []Unit {
 	items := topLevelItems(u.Text, true)
 	lastLine := strings.Count(u.Text, "\n")
-	ctx := u.Context + "\nLIST:\n" + u.Text
+	// Inherited block-level headers (HEADING, PREVIOUS BLOCK, POSITION) apply to every step;
+	// NEXT LINE follows the whole list, so relabel it for non-final steps before appending LIST.
+	nonFinalCtx := u.Context
+	if i := strings.LastIndex(nonFinalCtx, "\nNEXT LINE: "); i >= 0 {
+		nonFinalCtx = nonFinalCtx[:i] + "\nAFTER THE LIST: " + nonFinalCtx[i+len("\nNEXT LINE: "):]
+	}
+	listSuffix := "\nLIST:\n" + u.Text
 	out := make([]Unit, 0, len(items))
 	for _, it := range items {
-		stepCtx := ctx
+		baseCtx := u.Context
 		if it.end < lastLine {
-			// NEXT LINE follows the whole list, not an intermediate step.
-			stepCtx = strings.Replace(ctx, "\nNEXT LINE: ", "\nAFTER THE LIST: ", 1)
+			baseCtx = nonFinalCtx
 		}
 		out = append(out, Unit{
 			Kind: "Step", File: u.File,
 			Start: u.Start + it.start, End: u.Start + it.end,
-			Text: strings.Join(it.lines, "\n"), Context: stepCtx,
+			Text: strings.Join(it.lines, "\n"), Context: baseCtx + listSuffix,
 		})
 	}
 	return out
