@@ -105,6 +105,22 @@ type err429 struct{ msg string }
 
 func (e err429) Error() string { return e.msg }
 
+type errFatalHTTP struct {
+	status int
+	msg    string
+}
+
+func (e errFatalHTTP) Error() string { return e.msg }
+
+func isFatalStatus(code int) bool {
+	return code == http.StatusUnauthorized || code == http.StatusPaymentRequired || code == http.StatusForbidden
+}
+
+func isFatalHTTP(err error) bool {
+	var fatal errFatalHTTP
+	return errors.As(err, &fatal)
+}
+
 // call asks the model for one batch: every rule in the job against the unit.
 // OpenAI gets a follow-up for omitted rules; systemone answers all in one pass.
 func (c *client) call(ctx context.Context, j job) (map[string]Verdict, error) {
@@ -201,6 +217,9 @@ func (c *client) callSystemOneRule(ctx context.Context, state string, r Rule) (V
 	defer res.Body.Close()
 	if res.StatusCode == http.StatusTooManyRequests || res.StatusCode == http.StatusServiceUnavailable {
 		return Verdict{}, err429{responseError(res, c.source, c.apiKey)}
+	}
+	if isFatalStatus(res.StatusCode) {
+		return Verdict{}, errFatalHTTP{res.StatusCode, responseError(res, c.source, c.apiKey)}
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		return Verdict{}, errors.New(responseError(res, c.source, c.apiKey))
@@ -322,6 +341,9 @@ func (c *client) callOnce(ctx context.Context, j job, followUp string) (map[stri
 	defer res.Body.Close()
 	if res.StatusCode == http.StatusTooManyRequests {
 		return nil, nil, err429{responseError(res, c.source, c.apiKey)}
+	}
+	if isFatalStatus(res.StatusCode) {
+		return nil, nil, errFatalHTTP{res.StatusCode, responseError(res, c.source, c.apiKey)}
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		return nil, nil, errors.New(responseError(res, c.source, c.apiKey))
@@ -529,7 +551,7 @@ func runWithRetry(ctx context.Context, c *client, j job) (map[string]Verdict, er
 		var v map[string]Verdict
 		v, err = c.call(ctx, job{unit: j.unit, rules: pending})
 		maps.Copy(merged, v)
-		if err == nil || errors.Is(err, errBudgetExhausted) || ctx.Err() != nil {
+		if err == nil || errors.Is(err, errBudgetExhausted) || isFatalHTTP(err) || ctx.Err() != nil {
 			break
 		}
 		pending = unansweredRules(pending, merged)

@@ -444,17 +444,46 @@ type poolResult struct {
 	erroredKeys   []string
 	budgetSkipped int
 	interrupted   bool
+	fatalErr      error
 }
 
 func runPool(ctx context.Context, jobs []job, o lintOpts, cl *client, ch *cache, prog *progress, linesCache map[string][]string, ledgerF *os.File) poolResult {
 	if cl.budget == nil {
 		cl.budget = &requestBudget{limit: int64(o.budget)}
 	}
+	poolCtx, cancelPool := context.WithCancel(ctx)
+	defer cancelPool()
 	var (
 		mu         sync.Mutex
 		res        poolResult
 		ledgerWarn atomic.Bool // first failed ledger write is logged once
 	)
+	recordErr := func(j job, todo []Rule, verdicts map[string]Verdict, err error) {
+		mu.Lock()
+		res.errs++
+		for _, r := range todo {
+			if _, ok := verdicts[r.ID]; !ok {
+				res.erroredKeys = append(res.erroredKeys, fmt.Sprintf("%s|%s|%d|%d", r.ID, j.unit.File, j.unit.Start, j.unit.End))
+			}
+		}
+		if isFatalHTTP(err) {
+			first := res.fatalErr == nil
+			if first {
+				res.fatalErr = err
+			}
+			mu.Unlock()
+			if first {
+				prog.warn(fmt.Sprintf("fatal: %v (stopping remaining checks)", err))
+				cancelPool()
+			}
+			return
+		}
+		show := res.errs <= 5 && poolCtx.Err() == nil
+		mu.Unlock()
+		if show {
+			prog.warn(fmt.Sprintf("warn: %s: %v", jobKey(j), err))
+		}
+	}
 	runJob := func(j job) {
 		prog.beginFile(j.unit.File)
 		defer prog.endFile(j.unit.File)
@@ -478,7 +507,7 @@ func runPool(ctx context.Context, jobs []job, o lintOpts, cl *client, ch *cache,
 		}
 		errored := false
 		if len(todo) > 0 {
-			v, err := runWithRetry(ctx, cl, job{unit: j.unit, rules: todo})
+			v, err := runWithRetry(poolCtx, cl, job{unit: j.unit, rules: todo})
 			for id, vv := range v {
 				ch.put(ch.key(cl.cacheModel(), tempStr, id, cl.cacheRuleVersion(id), j.unit), vv)
 				verdicts[id] = vv
@@ -492,18 +521,7 @@ func runPool(ctx context.Context, jobs []job, o lintOpts, cl *client, ch *cache,
 			}
 			if err != nil {
 				errored = true
-				mu.Lock()
-				res.errs++
-				for _, r := range todo {
-					if _, ok := verdicts[r.ID]; !ok {
-						res.erroredKeys = append(res.erroredKeys, fmt.Sprintf("%s|%s|%d|%d", r.ID, j.unit.File, j.unit.Start, j.unit.End))
-					}
-				}
-				show := res.errs <= 5 && ctx.Err() == nil
-				mu.Unlock()
-				if show {
-					prog.warn(fmt.Sprintf("warn: %s: %v", jobKey(j), err))
-				}
+				recordErr(j, todo, verdicts, err)
 			}
 		}
 		for _, r := range j.rules {
@@ -542,20 +560,21 @@ func runPool(ctx context.Context, jobs []job, o lintOpts, cl *client, ch *cache,
 	for range nW {
 		wg.Go(func() {
 			for j := range jobsCh {
-				if ctx.Err() != nil {
+				if poolCtx.Err() != nil {
 					return
 				}
 				runJob(j)
 			}
 		})
 	}
+submit:
 	for _, j := range jobs {
-		if ctx.Err() != nil {
-			res.interrupted = true
-			break
+		select {
+		case <-poolCtx.Done():
+			break submit
+		case jobsCh <- j:
+			prog.noteSubmit()
 		}
-		prog.noteSubmit()
-		jobsCh <- j
 	}
 	close(jobsCh)
 	wg.Wait()
@@ -617,7 +636,7 @@ func emitReportWithTemp(res poolResult, sev, outFmt string, nJobs int, prog *pro
 	if len(report) > 0 {
 		exit = 1
 	}
-	if (nJobs > 0 && res.errs == nJobs) || res.budgetSkipped > 0 {
+	if (nJobs > 0 && res.errs == nJobs) || res.budgetSkipped > 0 || res.fatalErr != nil {
 		exit = 2
 	}
 	if res.interrupted {

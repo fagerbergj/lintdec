@@ -510,3 +510,56 @@ func TestExplicitThresholdOverridesRuleFloorWhileKeepingVeto(t *testing.T) {
 		}
 	}
 }
+
+func TestRunWithRetryStopsImmediatelyOnFatalHTTP(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden} {
+		var calls atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls.Add(1)
+			w.WriteHeader(status)
+		}))
+		r1, _ := findRule("comment-tautology")
+		cl := &client{base: srv.URL, model: "m", httpc: srv.Client()}
+		j := job{unit: Unit{Kind: "Comment", File: "a.go", Start: 1, End: 1, Text: "// x"}, rules: []Rule{r1}}
+		_, err := runWithRetry(context.Background(), cl, j)
+		srv.Close()
+		if !isFatalHTTP(err) {
+			t.Fatalf("status %d: expected errFatalHTTP, got %v", status, err)
+		}
+		if calls.Load() != 1 {
+			t.Errorf("status %d: want 1 attempt (no retry), got %d", status, calls.Load())
+		}
+	}
+}
+
+func TestRunPoolFailsFastOnFatalHTTPWithoutDeadlock(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	r1, _ := findRule("comment-tautology")
+	// More than the 64-slot jobsCh buffer so cancelling mid-submit tests deadlock freedom.
+	jobs := make([]job, 100)
+	for i := range jobs {
+		jobs[i] = job{unit: Unit{Kind: "Comment", File: "a.go", Start: i + 1, End: i + 1, Text: "// x"}, rules: []Rule{r1}}
+	}
+	cl := &client{base: srv.URL, model: "m", httpc: srv.Client()}
+	res := runPool(context.Background(), jobs, lintOpts{workers: 4, quiet: true}, cl, newCache(false), newProgress(len(jobs), true), nil, nil)
+	if !isFatalHTTP(res.fatalErr) {
+		t.Fatalf("expected fatalErr, got %v", res.fatalErr)
+	}
+	if res.interrupted {
+		t.Error("fatal HTTP must not be flagged as user interrupt")
+	}
+	if calls.Load() > 8 {
+		t.Errorf("pool did not fail fast: made %d requests out of %d jobs", calls.Load(), len(jobs))
+	}
+	t.Chdir(t.TempDir())
+	code := emitReport(res, "info", "json", len(jobs), newProgress(len(jobs), true), false)
+	if code != 2 {
+		t.Errorf("emitReport exit = %d, want 2 on fatal HTTP", code)
+	}
+}
