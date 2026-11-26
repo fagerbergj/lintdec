@@ -30,12 +30,12 @@ const rawBudgetLines = 200
 func splitFile(path string, src []byte) []Unit {
 	switch {
 	case strings.HasSuffix(path, ".go"):
-		return splitGo(path, src)
+		return attachTestHelpers(splitGo(path, src))
 	case strings.HasSuffix(path, ".md") || strings.HasSuffix(path, ".markdown"):
 		return splitMarkdown(path, src)
 	}
 	if key, ok := tsExt[extOf(path)]; ok {
-		return splitTree(path, src, tsLangs[key])
+		return attachTestHelpers(splitTree(path, src, tsLangs[key]))
 	}
 	return nil
 }
@@ -127,8 +127,8 @@ func specDoc(d *ast.GenDecl, ts *ast.TypeSpec) *ast.CommentGroup {
 	return ts.Doc
 }
 
-// goCommentContext: a comment in or above a declaration also sees all of it, so
-// claims about code past the 8-line window can be checked.
+// goCommentContext: a comment in or above a bounded declaration sees that
+// declaration alone so unrelated neighbors do not dilute doc-comment checks.
 func goCommentContext(fset *token.FileSet, f *ast.File, lines []string, g *ast.CommentGroup) string {
 	s, e := fset.Position(g.Pos()).Line, fset.Position(g.End()).Line
 	for _, d := range f.Decls {
@@ -140,10 +140,99 @@ func goCommentContext(fset *token.FileSet, f *ast.File, lines []string, g *ast.C
 		}
 		ds, de := fset.Position(start).Line, min(fset.Position(d.End()).Line, len(lines))
 		if ds <= s && e <= de && de-ds <= rawBudgetLines {
-			return numberedContext(lines, min(ds, s-8), max(de, e+8), s, e)
+			return numberedContext(lines, ds, de, s, e)
 		}
 	}
 	return commentContext(lines, s, e)
+}
+
+const (
+	maxTestHelperLines = 30
+	maxTestHelperTotal = 50
+)
+
+var helperDeclRe = regexp.MustCompile(`^(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:func|function|def|fn|const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)\b`)
+
+type testHelper struct {
+	name  string
+	lines int
+	text  string
+}
+
+// attachTestHelpers adds short same-file helper functions called by a TestFunction
+// into its Context so rules can see fake clocks and assertion helpers.
+func attachTestHelpers(units []Unit) []Unit {
+	var helpers []testHelper
+	hasTest := false
+	for _, u := range units {
+		if u.Kind == "TestFunction" {
+			hasTest = true
+		} else if u.Kind == "Function" && u.End-u.Start+1 <= maxTestHelperLines {
+			if name := helperDeclName(u.Text); len(name) >= 3 {
+				helpers = append(helpers, testHelper{name: name, lines: u.End - u.Start + 1, text: u.Text})
+			}
+		}
+	}
+	if !hasTest || len(helpers) == 0 {
+		return units
+	}
+	for i := range units {
+		if units[i].Kind == "TestFunction" {
+			appendHelperContext(&units[i], helpers)
+		}
+	}
+	return units
+}
+
+func appendHelperContext(u *Unit, helpers []testHelper) {
+	var refs []string
+	used := 0
+	for _, h := range helpers {
+		if used+h.lines > maxTestHelperTotal || !callsHelper(u.Text, h.name) {
+			continue
+		}
+		refs = append(refs, h.text)
+		used += h.lines
+	}
+	if len(refs) == 0 {
+		return
+	}
+	block := "HELPERS IN THIS FILE:\n" + strings.Join(refs, "\n")
+	if u.Context != "" {
+		u.Context += "\n\n" + block
+	} else {
+		u.Context = block
+	}
+}
+
+func helperDeclName(text string) string {
+	first := strings.TrimSpace(strings.SplitN(text, "\n", 2)[0])
+	if m := helperDeclRe.FindStringSubmatch(first); len(m) == 2 {
+		return m[1]
+	}
+	return ""
+}
+
+func callsHelper(body, name string) bool {
+	for idx := 0; idx < len(body); {
+		j := strings.Index(body[idx:], name)
+		if j < 0 {
+			return false
+		}
+		pos := idx + j
+		end := pos + len(name)
+		prevOK := pos == 0 || (!isIdentByte(body[pos-1]) && body[pos-1] != '.')
+		nextOK := end < len(body) && body[end] == '('
+		if prevOK && nextOK {
+			return true
+		}
+		idx = pos + 1
+	}
+	return false
+}
+
+func isIdentByte(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_' || b == '$'
 }
 
 func splitMarkdown(path string, src []byte) []Unit {

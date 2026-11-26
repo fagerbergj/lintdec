@@ -273,13 +273,13 @@ func collectComments(root *sitter.Node, path string, cfg tsCfg, src []byte, line
 	return out
 }
 
-// treeCommentContext mirrors goCommentContext: a comment above or inside a
-// bounded declaration sees the whole declaration in addition to +-8 nearby lines.
+// treeCommentContext mirrors goCommentContext: a comment directly above or inside
+// a bounded declaration sees that declaration alone, without unrelated neighbors.
 func treeCommentContext(lines []string, last *sitter.Node, s, e int, cfg tsCfg, src []byte) string {
 	nxt := last.NextSibling()
 	if nxt != nil && isUnitStart(nxt, cfg, src) && int(nxt.StartPoint().Row)+1 <= e+1 {
 		if de := min(int(nxt.EndPoint().Row)+1, len(lines)); de-s <= rawBudgetLines {
-			return numberedContext(lines, s-8, max(de, e+8), s, e)
+			return numberedContext(lines, e+1, de, s, e)
 		}
 	}
 	for p := last.Parent(); p != nil; p = p.Parent() {
@@ -288,13 +288,13 @@ func treeCommentContext(lines []string, last *sitter.Node, s, e int, cfg tsCfg, 
 		}
 		ds, de := int(p.StartPoint().Row)+1, min(int(p.EndPoint().Row)+1, len(lines))
 		if de-ds <= rawBudgetLines {
-			return numberedContext(lines, min(ds, s-8), max(de, e+8), s, e)
+			return numberedContext(lines, ds, de, s, e)
 		}
 		break
 	}
 	if nxt != nil && int(nxt.StartPoint().Row)+1 <= e+1 {
 		if de := min(int(nxt.EndPoint().Row)+1, len(lines)); de-s <= rawBudgetLines {
-			return numberedContext(lines, s-8, max(de, e+8), s, e)
+			return numberedContext(lines, e+1, de, s, e)
 		}
 	}
 	return commentContext(lines, s, e)
