@@ -280,7 +280,7 @@ func parseLintFlags(args []string) (lintOpts, error) {
 	if o.budget < 0 {
 		return o, fmt.Errorf("--budget cannot be negative")
 	}
-	if o.setFlags["threshold"] && (o.threshold <= 0 || o.threshold > 1) {
+	if o.setFlags["threshold"] && !(o.threshold > 0 && o.threshold <= 1) {
 		return o, fmt.Errorf("--threshold must be in (0, 1]")
 	}
 	if o.setFlags["diff"] && o.diff == "" {
@@ -476,6 +476,7 @@ func runPool(ctx context.Context, jobs []job, o lintOpts, cl *client, ch *cache,
 		if wasCached && cl.costs != nil {
 			cl.costs.recordCachedJob()
 		}
+		errored := false
 		if len(todo) > 0 {
 			v, err := runWithRetry(ctx, cl, job{unit: j.unit, rules: todo})
 			for id, vv := range v {
@@ -490,6 +491,7 @@ func runPool(ctx context.Context, jobs []job, o lintOpts, cl *client, ch *cache,
 				return
 			}
 			if err != nil {
+				errored = true
 				mu.Lock()
 				res.errs++
 				for _, r := range todo {
@@ -502,13 +504,11 @@ func runPool(ctx context.Context, jobs []job, o lintOpts, cl *client, ch *cache,
 				if show {
 					prog.warn(fmt.Sprintf("warn: %s: %v", jobKey(j), err))
 				}
-				prog.tick(time.Since(start), false, fmt.Sprintf("%s:%d · error", j.unit.File, j.unit.Start))
-				return
 			}
 		}
 		for _, r := range j.rules {
-			vv := verdicts[r.ID]
-			if !reportable(r, vv, cl.floorOverride(), cl.calibrate) {
+			vv, ok := verdicts[r.ID]
+			if !ok || !reportable(r, vv, cl.floorFor(r), cl.calibrate) {
 				continue
 			}
 			f := buildFinding(j, r, vv, linesCache)
@@ -528,6 +528,10 @@ func runPool(ctx context.Context, jobs []job, o lintOpts, cl *client, ch *cache,
 			}
 			mu.Unlock()
 			prog.addFinding(f)
+		}
+		if errored {
+			prog.tick(time.Since(start), false, fmt.Sprintf("%s:%d · error", j.unit.File, j.unit.Start))
+			return
 		}
 		prog.tick(time.Since(start), wasCached, fmt.Sprintf("%s:%d · %d flagged", j.unit.File, j.unit.Start, lintCount(verdicts)))
 	}
@@ -799,19 +803,19 @@ func changedUnits(units []Unit, changes map[string]diffRanges, active []Rule, li
 
 func newLintClient(prov endpoint, o lintOpts) *client {
 	return &client{
-		base:      prov.BaseURL,
-		protocol:  prov.Protocol,
-		model:     prov.Model,
-		apiKey:    prov.APIKey,
-		source:    prov.source,
-		trustCost: reportsProviderCost(prov.BaseURL),
-		costs:     &costAccumulator{},
-		budget:    &requestBudget{limit: int64(o.budget)},
+		base:         prov.BaseURL,
+		protocol:     prov.Protocol,
+		model:        prov.Model,
+		apiKey:       prov.APIKey,
+		source:       prov.source,
+		trustCost:    reportsProviderCost(prov.BaseURL),
+		costs:        &costAccumulator{},
+		budget:       &requestBudget{limit: int64(o.budget)},
 		temp:         o.temp,
 		threshold:    o.threshold,
 		thresholdSet: o.setFlags["threshold"],
 		calibrate:    o.calibrate,
-		httpc:     &http.Client{Timeout: 5 * time.Minute},
+		httpc:        &http.Client{Timeout: 5 * time.Minute},
 	}
 }
 

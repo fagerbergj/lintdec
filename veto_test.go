@@ -9,24 +9,24 @@ func TestReportableAppliesFloorAndVeto(t *testing.T) {
 	flakey, _ := findRule("flakey-test")
 	low, high := 0.1, 0.9
 	cases := []struct {
-		name          string
-		v             Verdict
-		floorOverride float64
-		calibrate     bool
-		want          bool
+		name      string
+		v         Verdict
+		floor     float64
+		calibrate bool
+		want      bool
 	}{
-		{"below floor", Verdict{Lint: true, Confidence: 0.79}, 0, false, false},
-		{"above floor, no veto", Verdict{Lint: true, Confidence: 0.85}, 0, false, true},
-		{"vetoed", Verdict{Lint: true, Confidence: 0.95, Veto: &high}, 0, false, false},
-		{"veto below cut", Verdict{Lint: true, Confidence: 0.95, Veto: &low}, 0, false, true},
+		{"below floor", Verdict{Lint: true, Confidence: 0.79}, ruleFloor("flakey-test"), false, false},
+		{"above floor, no veto", Verdict{Lint: true, Confidence: 0.85}, ruleFloor("flakey-test"), false, true},
+		{"vetoed", Verdict{Lint: true, Confidence: 0.95, Veto: &high}, ruleFloor("flakey-test"), false, false},
+		{"veto below cut", Verdict{Lint: true, Confidence: 0.95, Veto: &low}, ruleFloor("flakey-test"), false, true},
 		{"override lowers floor, keeps veto pass", Verdict{Lint: true, Confidence: 0.70, Veto: &low}, 0.65, false, true},
 		{"override lowers floor, keeps veto block", Verdict{Lint: true, Confidence: 0.70, Veto: &high}, 0.65, false, false},
 		{"override raises floor", Verdict{Lint: true, Confidence: 0.85}, 0.90, false, false},
-		{"calibrate ignores floor and veto", Verdict{Lint: true, Confidence: 0.6, Veto: &high}, 0, true, true},
-		{"not lint", Verdict{Confidence: 0.99}, 0, true, false},
+		{"calibrate ignores floor and veto", Verdict{Lint: true, Confidence: 0.6, Veto: &high}, ruleFloor("flakey-test"), true, true},
+		{"not lint", Verdict{Confidence: 0.99}, ruleFloor("flakey-test"), true, false},
 	}
 	for _, c := range cases {
-		if got := reportable(flakey, c.v, c.floorOverride, c.calibrate); got != c.want {
+		if got := reportable(flakey, c.v, c.floor, c.calibrate); got != c.want {
 			t.Errorf("%s: reportable = %v, want %v", c.name, got, c.want)
 		}
 	}

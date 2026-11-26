@@ -20,14 +20,14 @@ import (
 )
 
 type client struct {
-	base      string
-	protocol  string // ""|"openai" or "systemone"
-	model     string
-	apiKey    string
-	source    authSource
-	trustCost bool
-	costs     *costAccumulator
-	budget    *requestBudget
+	base         string
+	protocol     string // ""|"openai" or "systemone"
+	model        string
+	apiKey       string
+	source       authSource
+	trustCost    bool
+	costs        *costAccumulator
+	budget       *requestBudget
 	temp         float64
 	threshold    float64
 	thresholdSet bool
@@ -75,11 +75,11 @@ func (c *client) cacheRuleVersion(ruleID string) string {
 	return allRulesVersion
 }
 
-func (c *client) floorOverride() float64 {
+func (c *client) floorFor(r Rule) float64 {
 	if c.thresholdSet {
 		return c.threshold
 	}
-	return 0
+	return ruleFloor(r.ID)
 }
 
 type Verdict struct {
@@ -362,7 +362,8 @@ func decodeCompletion(body io.Reader, usage **chatUsage) (string, error) {
 // extractVerdictMap scans valid top-level JSON objects in raw, preferring the
 // last object keyed by any expected rule id over stray braces in prose.
 func extractVerdictMap(raw string, rules []Rule) (map[string]json.RawMessage, error) {
-	var bestMatch, bestAny map[string]json.RawMessage
+	var bestMatch map[string]json.RawMessage
+	sawEmpty := false
 	for i := 0; i < len(raw); i++ {
 		if raw[i] != '{' {
 			continue
@@ -372,8 +373,9 @@ func extractVerdictMap(raw string, rules []Rule) (map[string]json.RawMessage, er
 		if err := dec.Decode(&m); err != nil {
 			continue
 		}
-		bestAny = m
-		if matchesAnyRule(m, rules) {
+		if len(m) == 0 {
+			sawEmpty = true
+		} else if matchesAnyRule(m, rules) {
 			bestMatch = m
 		}
 		if off := int(dec.InputOffset()); off > 1 {
@@ -383,8 +385,8 @@ func extractVerdictMap(raw string, rules []Rule) (map[string]json.RawMessage, er
 	if bestMatch != nil {
 		return bestMatch, nil
 	}
-	if bestAny != nil {
-		return bestAny, nil
+	if sawEmpty {
+		return map[string]json.RawMessage{}, nil
 	}
 	return fallbackVerdictError(raw)
 }
@@ -407,7 +409,10 @@ func fallbackVerdictError(raw string) (map[string]json.RawMessage, error) {
 		return nil, fmt.Errorf("no JSON in model reply: %.80q", raw)
 	}
 	var m map[string]json.RawMessage
-	return nil, fmt.Errorf("bad model JSON: %w", json.Unmarshal([]byte(raw[s:e+1]), &m))
+	if err := json.Unmarshal([]byte(raw[s:e+1]), &m); err != nil {
+		return nil, fmt.Errorf("bad model JSON: %w", err)
+	}
+	return nil, fmt.Errorf("model JSON has no expected rule keys: %.80q", raw[s:e+1])
 }
 
 // parseVerdicts extracts the rule-id → verdict map. It returns the verdicts

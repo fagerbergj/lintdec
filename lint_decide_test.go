@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -336,12 +337,19 @@ func TestParseVerdictsUnbalancedFallback(t *testing.T) {
 	if _, _, err := parseVerdicts(`{"comment-long": invalid}`, j); err == nil || !strings.Contains(err.Error(), "bad model JSON") {
 		t.Fatalf("expected bad model JSON error, got %v", err)
 	}
+	if _, _, err := parseVerdicts(`{"comment-long":{"lint":false},}`, j); err == nil || !strings.Contains(err.Error(), "bad model JSON") {
+		t.Fatalf("malformed outer JSON must not fall back to inner object, got %v", err)
+	}
+	if _, _, err := parseVerdicts(`{"unrelated":"value"}`, j); err == nil || !strings.Contains(err.Error(), "no expected rule keys") {
+		t.Fatalf("unrelated JSON object must error, got %v", err)
+	}
 	if _, _, err := parseVerdicts("no braces here", j); err == nil || !strings.Contains(err.Error(), "no JSON") {
 		t.Fatalf("expected no JSON error, got %v", err)
 	}
 }
 
 func TestSystemOnePartialRetryKeepsSucceededVerdicts(t *testing.T) {
+	var mu sync.Mutex
 	var seen []string
 	var failOnce atomic.Bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -350,9 +358,11 @@ func TestSystemOnePartialRetryKeepsSucceededVerdicts(t *testing.T) {
 		}
 		json.NewDecoder(r.Body).Decode(&body)
 		for id := range body.Questions {
+			mu.Lock()
 			seen = append(seen, id)
+			mu.Unlock()
 			if id == "todo-no-owner" && !failOnce.Swap(true) {
-				w.WriteHeader(http.StatusServiceUnavailable)
+				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
 			json.NewEncoder(w).Encode(map[string]any{
@@ -370,8 +380,36 @@ func TestSystemOnePartialRetryKeepsSucceededVerdicts(t *testing.T) {
 	if err != nil || len(got) != 2 {
 		t.Fatalf("got=%+v err=%v", got, err)
 	}
+	mu.Lock()
+	defer mu.Unlock()
 	if !slices.Equal(seen, []string{"comment-long", "todo-no-owner", "todo-no-owner"}) {
 		t.Errorf("succeeded rule was re-requested on retry: %v", seen)
+	}
+}
+
+func TestRunPoolReportsPartialVerdictsWhenSiblingErrors(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Questions map[string]map[string]any `json:"questions"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		if _, ok := body.Questions["comment-long"]; ok {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"answers": map[string]any{"todo-no-owner": map[string]any{"type": "noul", "noul": 0.95}},
+		})
+	}))
+	defer srv.Close()
+
+	r1, _ := findRule("todo-no-owner")
+	r2, _ := findRule("comment-long")
+	u := Unit{Kind: "Comment", File: "a.go", Start: 1, End: 1, Text: "// TODO: fix"}
+	cl := &client{base: srv.URL, protocol: "systemone", model: "clef", threshold: 0.75, httpc: srv.Client()}
+	res := runPool(context.Background(), []job{{unit: u, rules: []Rule{r1, r2}}}, lintOpts{workers: 1, quiet: true}, cl, &cache{dir: t.TempDir(), on: true}, newProgress(1, true), map[string][]string{"a.go": {u.Text}}, nil)
+	if res.errs != 1 || len(res.erroredKeys) != 1 || len(res.findings) != 1 || res.findings[0].Rule != "todo-no-owner" {
+		t.Fatalf("want 1 finding + 1 error for sibling failure: errs=%d errored=%v findings=%+v", res.errs, res.erroredKeys, res.findings)
 	}
 }
 
@@ -450,8 +488,8 @@ func TestExplicitThresholdOverridesRuleFloorWhileKeepingVeto(t *testing.T) {
 		t.Fatalf("explicit --threshold 0.75 should report 0.80 from cache: findings=%d calls=%d", len(resExplicit.findings), calls.Load())
 	}
 
-	// Out-of-range --threshold values are rejected.
-	for _, bad := range []string{"--threshold=0", "--threshold=-0.1", "--threshold=1.1"} {
+	// Out-of-range and NaN --threshold values are rejected.
+	for _, bad := range []string{"--threshold=0", "--threshold=-0.1", "--threshold=1.1", "--threshold=NaN"} {
 		if _, err := parseLintFlags([]string{bad}); err == nil {
 			t.Errorf("parseLintFlags(%q) should fail", bad)
 		}
