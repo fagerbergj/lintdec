@@ -218,15 +218,25 @@ func TestWordyPhraseAnchorsToItsLine(t *testing.T) {
 }
 
 func TestStepUnitsKeepExactLinesAndNesting(t *testing.T) {
-	md := "# Guide\n\n## Run\n\n1. Open the panel\n   and select a host.\n   - nested sub-bullet\n   1. nested sub-step\n2. The build starts automatically.\n"
+	md := "# Guide\n\n## Run\n\n  1. Open the panel\n     and select a host.\n\t1. tab-indented sub-step\n  2. The build starts automatically.\n\n```sh\necho done\n```\n"
 	steps := unitsOf("Step", splitMarkdown("run.md", []byte(md)))
 	if len(steps) != 2 {
 		t.Fatalf("want 2 top-level Step units, got %d: %+v", len(steps), steps)
 	}
-	if steps[0].Start != 5 || steps[0].End != 8 || !strings.Contains(steps[0].Text, "nested sub-step") {
+	if steps[0].Start != 5 || steps[0].End != 7 || !strings.Contains(steps[0].Text, "tab-indented sub-step") {
 		t.Errorf("first step span/text wrong: %+v", steps[0])
 	}
-	if steps[1].Start != 9 || steps[1].End != 9 || !strings.Contains(steps[1].Context, "LIST:\n1. Open the panel") {
-		t.Errorf("second step span/context wrong: %+v", steps[1])
+	if !strings.Contains(steps[0].Context, "AFTER THE LIST: ```sh") || strings.Contains(steps[0].Context, "\nNEXT LINE:") {
+		t.Errorf("non-final step should relabel list NEXT LINE:\n%s", steps[0].Context)
+	}
+	if steps[1].Start != 8 || steps[1].End != 8 || !strings.Contains(steps[1].Context, "NEXT LINE: ```sh") || !strings.Contains(steps[1].Context, "LIST:\n  1. Open the panel") {
+		t.Errorf("final step span/context wrong: %+v", steps[1])
+	}
+}
+
+func TestStepRuleTargetsStepUnits(t *testing.T) {
+	r, ok := findRule("md-step-not-command")
+	if !ok || !ruleApplies(r, "Step") || ruleApplies(r, "Steps") {
+		t.Fatalf("md-step-not-command Kinds = %v, want [Step]", r.Kinds)
 	}
 }
