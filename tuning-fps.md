@@ -129,3 +129,15 @@ Three pre-filtered opt-in rules (`42 -> 45`) added after blind synthetic recall 
 - **Rejected before merge (Tier 4):**
   - `thin-wrapper` (AI-slop pass-through functions): failed both cost (`2,279` decisions across 4 repos) and precision (1/2 lab quiet FP at `0.955`, veto `0.100` on an `io.Closer` interface method).
   - `data-clump` (`Interface`, 20 decisions across 4 repos): passed the synthetic lab (1/1 `0.980`, 0/1 quiet) but hit 0/2 real-world precision in dogfood (`lintdec/oidc_browser.go:44` 2-param keyring store and `quack/packages/catalog/src/port.ts:166` already-bundled object port).
+
+## Default-on promotion & opt-in graveyard pruning (2026-11-26)
+
+Rebalanced the rule set from `15/45` default-on (`33%`) to `26/33` default-on (`79%`) after Clef verification across the 4 workspace repos (`lintdec`, `quack`, `games`, `home-server`; 980 files, 15,551 units, 0 errors):
+
+- **Promoted to default-on (+11 rules, 359 combined decisions across all 980 files, 100% lab recall, 0 quiet FPs, 0 real FPs):**
+  - Pre-filtered code/test/config/remediation rules: `lint-config-weakened` (2 decisions), `test-ignored-no-reason` (5), `md-no-remediation` (10), `test-over-mocked` (21), `hand-rolled-stdlib` (66), and `unbounded-retry` (69).
+  - Pre-filtered ADR/RFC/tone rules: `md-adr-no-cost` (0 decisions on non-ADR repos; blind ADR/RFC Clef lab 1/1 loud `0.926`, veto `0.032`, 0/4 quiet), `md-adr-many-decisions` (0 decisions; lab 1/1 loud `0.988`, veto `0.040`, 0/4 quiet), `md-rfc-no-ask` (0 decisions; lab 1/1 loud `0.891`, veto `0.115`, 0/4 quiet), `md-one-sided-alternatives` (32 decisions), and `md-blames-reader` (154 decisions).
+- **Pruned from opt-in graveyard (-12 rules; dead `Step` and `NounVerb` unit extractors removed):**
+  - `iface-god-method`: 4/4 false positives on React `interface Props` in `games` (`0.846–0.969`, no veto), 0 real catches across 500 audited files.
+  - `md-hidden-verb` (892 decisions across 4 repos, 0 above-floor catches in 500-file audit), `md-restates` (0.06% rate across 1,588 units), `md-prose-table` (0.19% rate), `md-one-topic` (0.17% rate), `md-marketing` (0 real hits), `md-howto-digression` (noisy on README/overview sections), `md-heading-promise` (noisy on terse ops headings), `md-noun-as-verb` (0 hits, too rare to measure), `md-topic-sentence` (0 above-floor hits), `md-step-not-command` (~60% FP on non-procedural lists without veto), and `comment-excuse` (0.18% rate, overlaps `todo-no-owner` and `comment-hedge`).
+- **Remaining opt-in (`defaultOff`, 7 rules):** high-cost unfiltered code checks (`swallowed-error`, `incomplete-assertion`, `name-mismatch`, `stub-body`, `file-several-jobs`) plus repo-specific style checks (`comment-history`, `md-two-names`).

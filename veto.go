@@ -5,34 +5,23 @@ package main
 const vetoConfidence = 0.5
 
 var ruleVetoes = map[string]string{
-	"flakey-test":              "Would this test pass reliably even on a slow, heavily loaded machine: every sleep only simulates a delay or bounds a failure path, every deadline is generous, and no assertion depends on goroutine order or wall-clock speed?",
-	"incomplete-assertion":     "Does the test assert every behavior its name or doc comment promises, even if it leaves incidental fields or return values unchecked?",
-	"swallowed-error":          "Is any ignored or replaced error in TARGET deliberate and harmless: best-effort work, a value that cannot realistically fail, idiomatic cleanup, or a fallback the code or a comment documents?",
-	"comment-contradicts-code": "Is every claim in the comment that can be checked against the visible code consistent with that code?",
-	"stub-body":                "Is the minimal body intentional: a no-op or placeholder its name or comment describes, a generated or dependency-injection stub, or an implementation whose contract is to do nothing?",
-	"iface-leaky":              "Is this interface a deliberately thin wrapper or test seam over a client or SDK, where exposing that client's types is the point?",
-	"file-several-jobs":        "Do all the declarations serve one purpose, such as one command, one feature, or one test subject with its helpers?",
-	"name-mismatch":            "Does the body do what its name says, read plainly?",
-	"comment-excuse":           "Does the comment explain a deliberate choice or constraint rather than apologize for or defer a problem?",
-	"comment-hedge":            "Does the comment state a known fact or documented limitation rather than leave doubt about whether the code is correct?",
-	"comment-history":          "Does the comment explain current behavior, a binding constraint, a live legacy data or schema format the code still handles, or an in-test scenario timeline (such as v1/v2 fixture steps), rather than narrating code or git history?",
-	"comment-long":             "Does every sentence in the comment state a non-obvious constraint, invariant, or design decision that the code cannot express, rather than pad a short note into an essay?",
-	"md-inanimate-actor":       "Is the subject of the marked verb in TARGET a person, a role (a PM, the caller, the recipient, the on-call engineer), a team or organization, or an AI model, agent, or assistant (an LLM, Claude, the agent)?",
-	"md-wordy-phrase":          "Would replacing the marked phrase in TARGET with a single plain word change the meaning here (for example \"should be able to\", \"for the sole purpose of\", a negation, or a fixed user-story template), or is the marked phrase inside quoted text, a title, or code?",
-	"md-restates":              "Does the TARGET state at least one fact, step, condition, destination, or example that neither the HEADING nor the PREVIOUS BLOCK states, or is it a lead-in to the block on the NEXT LINE?",
-	"md-heading-promise":       "Does the section text say anything about the topic its heading names, even briefly, even to say it does not apply, has nothing to report, is deferred, or is covered by a link or a checked template box?",
-	"md-two-names":             "Is each thing called by one name in the document's own prose, with any variants being ticket titles, file paths, code identifiers, or second names introduced as such where they first appear?",
-	"md-hidden-verb":           "Is every weak-verb-plus-noun phrase in TARGET (such as \"performs an evaluation of\" or \"makes a determination of\") a standard term (for example \"access control\", \"code review\", \"go/no-go decision\"), a passive verb, or a lead-in to a list, rather than an action that one plain verb would say more directly?",
-	"md-prose-list":            "Are the inline items short words or names that read naturally in one sentence (such as \"Go, Kotlin, and TypeScript\"), or are the clauses one argument building to a conclusion, or is the sentence a fixed template?",
-	"md-prose-table":           "Is the TARGET already a table, or do the things it describes have different attributes from each other?",
-	"md-topic-sentence":        "Does the paragraph have fewer than three sentences, or does its first sentence state or lead into the subject of the rest?",
-	"md-one-topic":             "Do all the sentences serve the paragraph's main point?",
-	// Under S-13, an automatic result belongs inside the preceding step rather than as its own step.
-	"md-step-not-command":       "Is the list in CONTEXT something other than procedural steps the reader performs (for example principles, checklist topics, deliverables, or test cases), or is the TARGET step a label for a code block or sub-steps?",
+	"flakey-test":               "Would this test pass reliably even on a slow, heavily loaded machine: every sleep only simulates a delay or bounds a failure path, every deadline is generous, and no assertion depends on goroutine order or wall-clock speed?",
+	"incomplete-assertion":      "Does the test assert every behavior its name or doc comment promises, even if it leaves incidental fields or return values unchecked?",
+	"swallowed-error":           "Is any ignored or replaced error in TARGET deliberate and harmless: best-effort work, a value that cannot realistically fail, idiomatic cleanup, or a fallback the code or a comment documents?",
+	"comment-contradicts-code":  "Is every claim in the comment that can be checked against the visible code consistent with that code?",
+	"stub-body":                 "Is the minimal body intentional: a no-op or placeholder its name or comment describes, a generated or dependency-injection stub, or an implementation whose contract is to do nothing?",
+	"iface-leaky":               "Is this interface a deliberately thin wrapper or test seam over a client or SDK, where exposing that client's types is the point?",
+	"file-several-jobs":         "Do all the declarations serve one purpose, such as one command, one feature, or one test subject with its helpers?",
+	"name-mismatch":             "Does the body do what its name says, read plainly?",
+	"comment-hedge":             "Does the comment state a known fact or documented limitation rather than leave doubt about whether the code is correct?",
+	"comment-history":           "Does the comment explain current behavior, a binding constraint, a live legacy data or schema format the code still handles, or an in-test scenario timeline (such as v1/v2 fixture steps), rather than narrating code or git history?",
+	"comment-long":              "Does every sentence in the comment state a non-obvious constraint, invariant, or design decision that the code cannot express, rather than pad a short note into an essay?",
+	"md-inanimate-actor":        "Is the subject of the marked verb in TARGET a person, a role (a PM, the caller, the recipient, the on-call engineer), a team or organization, or an AI model, agent, or assistant (an LLM, Claude, the agent)?",
+	"md-wordy-phrase":           "Would replacing the marked phrase in TARGET with a single plain word change the meaning here (for example \"should be able to\", \"for the sole purpose of\", a negation, or a fixed user-story template), or is the marked phrase inside quoted text, a title, or code?",
+	"md-two-names":              "Is each thing called by one name in the document's own prose, with any variants being ticket titles, file paths, code identifiers, or second names introduced as such where they first appear?",
+	"md-prose-list":             "Are the inline items short words or names that read naturally in one sentence (such as \"Go, Kotlin, and TypeScript\"), or are the clauses one argument building to a conclusion, or is the sentence a fixed template?",
 	"md-list-not-parallel":      "Do the items match in grammar and kind well enough that a reader would not notice a mismatch, for example all following the same label-then-detail pattern?",
-	"md-marketing":              "Is each strong adjective backed by a fact, number, or comparison in the same sentence or the one after it?",
 	"md-blames-reader":          "Does the text describe the problem or the fix without saying the reader was at fault?",
-	"md-howto-digression":       "Is the section something other than task instructions, or does every explanatory sentence tell the reader something they need to finish the task?",
 	"md-no-purpose":             "Does the title or first paragraph tell the reader what the document is for?",
 	"md-rfc-no-ask":             "Is the document something other than a proposal asking reviewers to approve a change, such as an idea, goal, or planning page, a README, guide, reference, notes, or a record of a decision already made?",
 	"md-adr-many-decisions":     "Is the document something other than an architecture decision record, or does it record one decision with its parts?",
@@ -51,29 +40,19 @@ var ruleVetoes = map[string]string{
 // ruleFloors: tuned per rule on labeled findings, with 30% of files held out; unlisted rules need 0.75.
 var ruleFloors = map[string]float64{
 	"todo-no-owner": 0.9, "comment-history": 0.85, "flakey-test": 0.8, "comment-long": 0.8,
-	"comment-tautology": 0.7, "comment-excuse": 0.7, "tautology-test": 0.7,
+	"comment-tautology": 0.7, "tautology-test": 0.7,
 	"md-inanimate-actor":   0.6,
-	"md-marketing":         0.85,
 	"md-prose-list":        0.85,
 	"md-list-not-parallel": 0.9,
-	"md-step-not-command":  0.85,
 	"md-no-purpose":        0.85,
 }
 
-var ruleVetoCuts = map[string]float64{"flakey-test": 0.3, "comment-excuse": 0.7}
+var ruleVetoCuts = map[string]float64{"flakey-test": 0.3}
 
-// defaultOff: opt-in rules (low recall, veto-dependent, high cost, or pending lab validation).
+// defaultOff: opt-in rules (unfiltered high-cost code checks or repo-specific style checks).
 var defaultOff = map[string]bool{
-	"file-several-jobs": true, "iface-god-method": true,
-	"incomplete-assertion": true, "name-mismatch": true, "stub-body": true,
-	"swallowed-error": true, "comment-excuse": true, "comment-history": true,
-	"md-marketing": true, "md-heading-promise": true, "md-prose-table": true, "md-restates": true,
-	"md-step-not-command": true, "md-howto-digression": true, "md-blames-reader": true,
-	"md-noun-as-verb": true, "md-hidden-verb": true,
-	"md-one-sided-alternatives": true, "md-one-topic": true, "md-rfc-no-ask": true, "md-two-names": true,
-	"md-topic-sentence": true, "md-adr-many-decisions": true, "md-adr-no-cost": true,
-	"test-ignored-no-reason": true, "test-over-mocked": true, "md-no-remediation": true,
-	"unbounded-retry": true, "hand-rolled-stdlib": true, "lint-config-weakened": true,
+	"file-several-jobs": true, "incomplete-assertion": true, "name-mismatch": true,
+	"stub-body": true, "swallowed-error": true, "comment-history": true, "md-two-names": true,
 }
 
 func ruleFloor(id string) float64 {

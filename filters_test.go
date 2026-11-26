@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -25,9 +26,6 @@ func TestRuleEligibleDeterministicFilters(t *testing.T) {
 		{"comment-long", Unit{Kind: "Comment", Start: 1, End: 2, Text: "// one\n// two"}, false},
 		{"comment-long", Unit{Kind: "Comment", Start: 1, End: 3, Text: "// one\n// two\n// three"}, true},
 		{"comment-long", Unit{Kind: "Comment", Start: 1, End: 1, Text: longSingleLine}, true},
-
-		{"md-topic-sentence", Unit{Kind: "Paragraph", Text: "First sentence here. Second sentence here."}, false},
-		{"md-topic-sentence", Unit{Kind: "Paragraph", Text: "First sentence here. Second sentence here. Third sentence here."}, true},
 
 		{"md-prose-list", Unit{Kind: "Paragraph", Text: "A single clear sentence with no list."}, false},
 		{"md-prose-list", Unit{Kind: "Paragraph", Text: "Items are alpha, beta, and gamma."}, true},
@@ -128,6 +126,22 @@ func TestEveryFilterMapsToKnownRule(t *testing.T) {
 	for id := range defaultOff {
 		if _, ok := findRule(id); !ok {
 			t.Errorf("defaultOff has entry for unknown rule %q", id)
+		}
+	}
+}
+
+func TestDefaultOnRulesAreFilteredOrNarrow(t *testing.T) {
+	narrow := map[string]bool{
+		"Comment": true, "Directive": true, "Interface": true, "TestFunction": true,
+		"ActorVerb": true, "WordyPhrase": true, "MixedList": true, "LintConfig": true,
+	}
+	for _, r := range rules {
+		if defaultOff[r.ID] {
+			continue
+		}
+		_, filtered := ruleFilters[r.ID]
+		if !filtered && !slices.ContainsFunc(r.Kinds, func(k string) bool { return narrow[k] }) {
+			t.Errorf("%s is default-on with no pre-filter and broad kinds %v", r.ID, r.Kinds)
 		}
 	}
 }

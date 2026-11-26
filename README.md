@@ -50,7 +50,7 @@ Commit a `lintdec.yaml` to the repository; lintdec finds it from the linted path
 ```yaml
 severity: warning
 rules:
-  - on: md-step-not-command
+  - on: swallowed-error
   - off: md-prose-list
 exclude:
   - '**/fixtures/**'

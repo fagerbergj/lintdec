@@ -377,9 +377,6 @@ func addMarkdownStructure(path string, lines []string, units []Unit) []Unit {
 		if m, ok := mixedList(u); ok && u.Kind != "Paragraph" {
 			units = append(units, m)
 		}
-		if u.Kind == "Steps" {
-			units = append(units, stepUnits(u)...)
-		}
 	}
 	text := proseLines(lines)
 	units = append(units, sectionUnits(path, text, heads, header)...)
@@ -492,7 +489,7 @@ func sectionUnits(path string, lines []string, heads []mdHeading, header string)
 	return units
 }
 
-// mdKind: a list starting "1." is Steps, so step rules skip plain bullets.
+// mdKind: a list starting "1." is Steps, kept distinct from Bullet for list-parallelism and prose rules.
 func mdKind(first string) string {
 	switch {
 	case !isBullet(first):

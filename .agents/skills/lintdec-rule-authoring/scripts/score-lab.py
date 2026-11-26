@@ -13,16 +13,13 @@ DEFAULT_FLOORS = {
     "flakey-test": 0.8,
     "comment-long": 0.8,
     "comment-tautology": 0.7,
-    "comment-excuse": 0.7,
     "tautology-test": 0.7,
     "md-inanimate-actor": 0.6,
-    "md-marketing": 0.85,
     "md-prose-list": 0.85,
     "md-list-not-parallel": 0.9,
-    "md-step-not-command": 0.85,
     "md-no-purpose": 0.85,
 }
-VETO_CUTS = {"flakey-test": 0.3, "comment-excuse": 0.7}
+VETO_CUTS = {"flakey-test": 0.3}
 DEFAULT_FLOOR = 0.75
 DEFAULT_VETO_CUT = 0.5
 

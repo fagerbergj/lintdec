@@ -1,6 +1,6 @@
 # Mined Candidate Rules Backlog
 
-Candidate rules mined from published software-maintainability, testability, static-analysis, meta-linting, AI-slop, and repository-health primary sources (Google SWE Book Ch. 11 & Ch. 20, TestSmells & TSR Catalog, OpenSSF Scorecard, Google Tricorder, `eslint-comments` / Hu et al. FSE 2025, Stoica et al. SOSP 2024, Go `modernize`, Ruff `FURB`, Refactoring.Guru, Martin Fowler, Diátaxis), filtered through the 5 admission gates against `lintdec`'s current **45 rules**.
+Candidate rules mined from published software-maintainability, testability, static-analysis, meta-linting, AI-slop, and repository-health primary sources (Google SWE Book Ch. 11 & Ch. 20, TestSmells & TSR Catalog, OpenSSF Scorecard, Google Tricorder, `eslint-comments` / Hu et al. FSE 2025, Stoica et al. SOSP 2024, Go `modernize`, Ruff `FURB`, Refactoring.Guru, Martin Fowler, Diátaxis), filtered through the 5 admission gates against `lintdec`'s current **33 rules (26 default-on)**.
 
 ---
 
@@ -10,12 +10,12 @@ Candidate rules mined from published software-maintainability, testability, stat
 |---|---|---|---|
 | `test-shared-state` | Default-on (`error`) | `TestFunction` | Google SWE Book Ch. 11 (`https://abseil.io/resources/swe-book/html/ch11.html`) |
 | `suppression-no-reason` | Default-on (`warning`) | `Directive` | `eslint-comments/require-description` (`https://eslint-community.github.io/eslint-plugin-eslint-comments/rules/require-description.html`) & Hu et al., FSE 2025 (`https://doi.org/10.1145/3715729`) |
-| `test-ignored-no-reason` | Opt-in (`warning`) | `TestFunction` | TestSmells (`https://testsmells.org/pages/testsmells.html`) & TSR Catalog (`https://tsr-catalog.readthedocs.io/en/latest/smells/ignored-test.html`) |
-| `test-over-mocked` | Opt-in (`warning`) | `TestFunction` | Google SWE Book Ch. 11 (`https://abseil.io/resources/swe-book/html/ch11.html`) |
-| `md-no-remediation` | Opt-in (`warning`) | `Section` | Google Tricorder (`https://research.google/pubs/tricorder-building-a-program-analysis-ecosystem/`) & OpenSSF Scorecard (`https://github.com/ossf/scorecard/blob/main/docs/checks.md`) |
-| `lint-config-weakened` | Opt-in (`warning`) | `LintConfig` | Google SWE Book Ch. 20 (`https://abseil.io/resources/swe-book/html/ch20.html`) & ESLint Rules/Ignore (`https://eslint.org/docs/latest/use/configure/rules`) |
-| `hand-rolled-stdlib` | Opt-in (`warning`) | `Function` | Go `modernize` (`https://pkg.go.dev/golang.org/x/tools/go/analysis/passes/modernize`) & Ruff `FURB` (`https://docs.astral.sh/ruff/rules/`) |
-| `unbounded-retry` | Opt-in (`error`) | `Function`, `Script` | Stoica et al., SOSP 2024 (`https://jonathanmace.github.io/papers/stoica2024retry.pdf`) |
+| `test-ignored-no-reason` | Default-on (`warning`) | `TestFunction` | TestSmells (`https://testsmells.org/pages/testsmells.html`) & TSR Catalog (`https://tsr-catalog.readthedocs.io/en/latest/smells/ignored-test.html`) |
+| `test-over-mocked` | Default-on (`warning`) | `TestFunction` | Google SWE Book Ch. 11 (`https://abseil.io/resources/swe-book/html/ch11.html`) |
+| `md-no-remediation` | Default-on (`warning`) | `Section` | Google Tricorder (`https://research.google/pubs/tricorder-building-a-program-analysis-ecosystem/`) & OpenSSF Scorecard (`https://github.com/ossf/scorecard/blob/main/docs/checks.md`) |
+| `lint-config-weakened` | Default-on (`warning`) | `LintConfig` | Google SWE Book Ch. 20 (`https://abseil.io/resources/swe-book/html/ch20.html`) & ESLint Rules/Ignore (`https://eslint.org/docs/latest/use/configure/rules`) |
+| `hand-rolled-stdlib` | Default-on (`warning`) | `Function` | Go `modernize` (`https://pkg.go.dev/golang.org/x/tools/go/analysis/passes/modernize`) & Ruff `FURB` (`https://docs.astral.sh/ruff/rules/`) |
+| `unbounded-retry` | Default-on (`error`) | `Function`, `Script` | Stoica et al., SOSP 2024 (`https://jonathanmace.github.io/papers/stoica2024retry.pdf`) |
 
 ---
 

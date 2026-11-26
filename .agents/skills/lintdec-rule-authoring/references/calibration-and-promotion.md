@@ -65,8 +65,8 @@ Measure four numbers per rule:
 |---|---|---|
 | **Tier 1 — Golden** | High verified precision (≥ 85–90% on Clef), real actionable catches, low marginal cost (pre-filtered or piggybacks on existing kind). | **Promote to default-on** (remove from `defaultOff`). |
 | **Tier 2 — Opt-In** | Real catches, but arguable maintainability value, high batch cost on unfiltered kinds, or high false-positive rate without System One vetoes. | **Keep in `defaultOff`**; tighten veto/floor if noisy. |
-| **Tier 3 — Zero Findings** | Zero above-floor hits in dogfooding (insufficient data). | **Keep in `defaultOff`**; re-check recall in blind synthetic lab before deciding keep vs. delete. |
-| **Tier 4 — Noisy / Dead / Subsumed** | High false positives even on Clef, structurally uncheckable from unit context, 0% recall in lab, or 100% subsumed by a default rule. | **Delete** from `rules.go`, `veto.go`, `filters.go`, and record in `tuning-fps.md`. |
+| **Tier 3 — Zero Findings** | Zero above-floor hits in dogfooding (insufficient data). | **Keep in `defaultOff`** (or promote if pre-filter cost is near zero and blind lab passes at 100% recall / 0 quiet FPs); re-check recall in blind lab before deciding keep vs. delete. |
+| **Tier 4 — Noisy / Dead / Subsumed** | High false positives even on Clef, structurally uncheckable from unit context, 0% recall in lab, 100% subsumed by a default rule, or chronically near-zero signal (`< 0.2%` across ≥ 500 files) paired with high cost or subjective taste. | **Delete** from `rules.go`, `veto.go`, `filters.go`, and record in `tuning-fps.md`. |
 
 ## 4. Recording Evidence in `tuning-fps.md`
 

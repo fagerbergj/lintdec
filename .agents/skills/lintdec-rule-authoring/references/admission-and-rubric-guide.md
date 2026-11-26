@@ -25,7 +25,7 @@ When mining research (e.g., maintainability or sloppiness catalogues), classify 
 Prefer existing `Unit.Kind` values unless the rule's target shape would inherit mismatched rules:
 
 - **Reuse existing kind** when all rules on that kind make sense on the unit (`Comment`, `TestFunction`, `Function`, `Interface`, `File`, `Paragraph`, `Bullet`, `Section`, `Document`).
-- **Add a dedicated kind** when reusing a kind would trigger irrelevant rules (e.g., `Step` for per-item numbered steps; `Script` for anonymous top-level shell bodies so `swallowed-error` runs without `name-mismatch` or `stub-body`).
+- **Add a dedicated kind** when reusing a kind would trigger irrelevant rules (e.g., `Script` for anonymous top-level shell bodies so `swallowed-error` runs without `name-mismatch` or `stub-body`; `Directive` for linter suppressions; `LintConfig` for linter config files).
 
 ### Pre-Filter Rules (`filters.go` & `candidates.go`)
 
