@@ -135,9 +135,8 @@ func (c *client) call(ctx context.Context, j job) (map[string]Verdict, error) {
 	return out, nil
 }
 
-// callSystemOne evaluates one rule (plus its exception veto, if any) per call
-// against the shared state so sibling rubrics do not suppress each other's noul
-// probabilities and per-rule cache entries stay independent of --rules.
+// callSystemOne sends one rule (+ its veto) per request against the shared state
+// so sibling rubrics cannot suppress each other and cache entries stay independent.
 func (c *client) callSystemOne(ctx context.Context, j job) (map[string]Verdict, error) {
 	var state strings.Builder
 	fmt.Fprintf(&state, "FILE: %s\nUNIT: %s, lines %d-%d\n", j.unit.File, j.unit.Kind, j.unit.Start, j.unit.End)
@@ -415,22 +414,26 @@ func parseVerdicts(raw string, j job) (map[string]Verdict, []string, error) {
 		if err := json.Unmarshal(b, &v); err != nil {
 			return nil, nil, fmt.Errorf("bad verdict for %s: %w", r.ID, err)
 		}
-		if v.Line != nil && (*v.Line < j.unit.Start || *v.Line > j.unit.End) {
-			l := j.unit.Start
-			v.Line = &l
-		}
-		if v.Severity != "low" && v.Severity != "med" && v.Severity != "high" {
-			v.Severity = "med"
-		}
-		if v.Lint && v.Reason == "" {
-			v.Reason = "no reason given"
-		}
-		if v.Confidence < 0 || v.Confidence > 1 {
-			v.Confidence = 0.5
-		}
-		out[r.ID] = v
+		out[r.ID] = normalizeVerdict(v, j.unit)
 	}
 	return out, missing, nil
+}
+
+func normalizeVerdict(v Verdict, u Unit) Verdict {
+	if v.Line != nil && (*v.Line < u.Start || *v.Line > u.End) {
+		l := u.Start
+		v.Line = &l
+	}
+	if v.Severity != "low" && v.Severity != "med" && v.Severity != "high" {
+		v.Severity = "med"
+	}
+	if v.Lint && v.Reason == "" {
+		v.Reason = "no reason given"
+	}
+	if v.Confidence < 0 || v.Confidence > 1 {
+		v.Confidence = 0.5
+	}
+	return v
 }
 
 type cache struct {

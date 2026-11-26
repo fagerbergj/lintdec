@@ -27,10 +27,10 @@ import (
 type tsCfg struct {
 	name      string
 	lang      func() *sitter.Language
-	ifaces    map[string]bool // node types that map to Interface units
-	callTests map[string]bool // call names that make the call a TestFunction
-	callHooks map[string]bool // setup/teardown hooks skipped for nested locals
-	testPref  string          // function-name prefix that makes a TestFunction
+	ifaces    map[string]bool
+	callTests map[string]bool
+	callHooks map[string]bool
+	testPref  string
 }
 
 var (
