@@ -32,6 +32,9 @@ func TestPlaceholderBody(t *testing.T) {
 		"| Team | Contact |\n|---|---|\n| A | b |": false,
 		"Real text.":             false,
 		"### Sub\n<!-- todo -->": true,
+		"[sh code block]":        true,
+		"[code block]":           true,
+		"[See the code block]":   false,
 	}
 	for in, want := range cases {
 		if got := placeholderBody(strings.Split(in, "\n")); got != want {
