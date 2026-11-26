@@ -16,19 +16,16 @@ var ruleVetoes = map[string]string{
 	"comment-excuse":           "Does the comment explain a deliberate choice or constraint rather than apologize for or defer a problem?",
 	"comment-hedge":            "Does the comment state a known fact or documented limitation rather than leave doubt about whether the code is correct?",
 	"comment-history":          "Does the comment mainly state current behavior or a binding constraint, with any history only as a passing reference?",
+	"comment-long":             "Does every sentence in the comment state a non-obvious constraint, invariant, or design decision that the code cannot express, rather than pad a short note into an essay?",
 	"md-inanimate-actor":       "Is the subject of the marked verb a person, a role (a PM, the caller, the recipient, the on-call engineer), a team or organization, or an AI model, agent, or assistant (an LLM, Claude, the agent)?",
 	"md-wordy-phrase":          "Would the one-word replacement change the meaning here (for example \"should be able to\", \"for the sole purpose of\", a negation, or a fixed user-story template), or is the phrase inside quoted text, a title, or code?",
-	"md-announces":             "Is every sentence in the TARGET a fact, the document's opening statement of its own purpose or scope, a short lead-in to the list, table, or code block on the NEXT LINE, a question or prompt the reader is meant to answer, or a pointer to another page?",
 	"md-restates":              "Does the TARGET state at least one fact, step, condition, destination, or example that neither the HEADING nor the PREVIOUS BLOCK states, or is it a lead-in to the block on the NEXT LINE?",
 	"md-heading-promise":       "Does the section text say anything about the topic its heading names, even briefly, even to say it does not apply, has nothing to report, is deferred, or is covered by a link or a checked template box?",
 	"md-two-names":             "Is each thing called by one name in the document's own prose, with any variants being ticket titles, file paths, code identifiers, or second names introduced as such where they first appear?",
 	"md-hidden-verb":           "Is the noun phrase a standard term (for example \"access control\", \"code review\", \"go/no-go decision\"), a passive verb, or a lead-in to a list, rather than an action that one plain verb would say more directly?",
-	"md-two-ideas":             "Does every clause in each sentence extend that sentence's main idea, for example by giving its reason, its result, its condition, or a detail of it, rather than start a separate one?",
 	"md-prose-list":            "Are the inline items short words or names that read naturally in one sentence (such as \"Go, Kotlin, and TypeScript\"), or are the clauses one argument building to a conclusion, or is the sentence a fixed template?",
 	"md-prose-table":           "Is the TARGET already a table, or do the things it describes have different attributes from each other?",
-	"md-idiom":                 "Is every figurative phrase in the sentence a standard technical term (for example \"race condition\", \"smoke test\", \"blast radius\", \"fail open\", \"bit rot\"), a name the document gives its own project, process, or pattern (see DOCUMENT HEADINGS), or close enough to literal that a non-native reader would understand it?",
 	"md-ambiguous-pronoun":     "Is there only one plausible referent for each pronoun, or would every plausible referent lead the reader to the same understanding and action?",
-	"md-dropped-words":         "Does the TARGET have only one reasonable reading, so terse wording leaves the reader nothing to guess, or is it a label, table cell, short list item, code reference, or reference entry?",
 	"md-topic-sentence":        "Does the paragraph have fewer than three sentences, or does its first sentence state or lead into the subject of the rest?",
 	"md-one-topic":             "Do all the sentences serve the paragraph's main point?",
 	// Under S-13, an automatic result belongs inside the preceding step rather than as its own step.
@@ -46,13 +43,12 @@ var ruleVetoes = map[string]string{
 
 // ruleFloors: tuned per rule on labeled findings, with 30% of files held out; unlisted rules need 0.75.
 var ruleFloors = map[string]float64{
-	"todo-no-owner": 0.9, "comment-history": 0.85, "comment-restates-name": 0.85, "flakey-test": 0.8, "comment-long": 0.8,
-	"comment-tautology": 0.7, "comment-excuse": 0.7, "tautology-test": 0.7, "commented-code": 0.7, "comment-hedge": 0.6,
+	"todo-no-owner": 0.9, "comment-history": 0.85, "flakey-test": 0.8, "comment-long": 0.8,
+	"comment-tautology": 0.7, "comment-excuse": 0.7, "tautology-test": 0.7,
 	"md-inanimate-actor":   0.6,
 	"md-marketing":         0.85,
 	"md-prose-list":        0.85,
 	"md-list-not-parallel": 0.9,
-	"md-idiom":             0.85,
 	"md-step-not-command":  0.85,
 	"md-no-purpose":        0.85,
 	"md-ambiguous-pronoun": 0.85,
@@ -60,17 +56,16 @@ var ruleFloors = map[string]float64{
 
 var ruleVetoCuts = map[string]float64{"flakey-test": 0.3, "comment-excuse": 0.7}
 
-// defaultOff: rules under 50% precise after tuning, still available by name. On fresh docs most md rules here were
-// 33-100% false; md-idiom tops out near 60% though judges agree, and md-noun-as-verb is too rare to measure.
+// defaultOff: opt-in rules (low recall, veto-dependent, high cost, or pending lab validation).
 var defaultOff = map[string]bool{
-	"assert-self": true, "comment-contradicts-code": true, "file-several-jobs": true, "iface-god-method": true,
-	"iface-leaky": true, "incomplete-assertion": true, "name-mismatch": true, "stub-body": true,
-	"swallowed-error": true, "test-except-pass": true, "wrong-assertion": true,
-	"comment-hedge": true, "comment-excuse": true, "comment-long": true, "commented-code": true, "comment-history": true,
+	"assert-self": true, "file-several-jobs": true, "iface-god-method": true,
+	"incomplete-assertion": true, "name-mismatch": true, "stub-body": true,
+	"swallowed-error": true, "test-except-pass": true, "comment-excuse": true,
 	"md-marketing": true, "md-heading-promise": true, "md-prose-table": true, "md-restates": true,
 	"md-ambiguous-pronoun": true, "md-step-not-command": true, "md-howto-digression": true, "md-blames-reader": true,
-	"md-idiom": true, "md-noun-as-verb": true, "md-announces": true, "md-dropped-words": true, "md-hidden-verb": true,
-	"md-one-sided-alternatives": true, "md-one-topic": true, "md-rfc-no-ask": true, "md-two-ideas": true, "md-two-names": true,
+	"md-noun-as-verb": true, "md-hidden-verb": true,
+	"md-one-sided-alternatives": true, "md-one-topic": true, "md-rfc-no-ask": true, "md-two-names": true,
+	"md-topic-sentence": true, "md-adr-many-decisions": true, "md-adr-no-cost": true,
 }
 
 func ruleFloor(id string) float64 {

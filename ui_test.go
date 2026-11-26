@@ -28,7 +28,7 @@ func TestColorRespectsTerminalAndEnvironment(t *testing.T) {
 
 func TestProgressFitsTerminalAndShowsLatestFile(t *testing.T) {
 	p := &progress{total: 10, done: 4, inflight: 2, cached: 1, last: "src/長い名前/very-long-file-name.go:23", ledgerN: 1,
-		bySev: map[string]int{"error": 1}, ledger: []Finding{{Severity: "error", File: "src/長い名前/file.go", Line: 23, Rule: "wrong-assertion", Message: "An assertion does not check the result"}}}
+		bySev: map[string]int{"error": 1}, ledger: []Finding{{Severity: "error", File: "src/長い名前/file.go", Line: 23, Rule: "tautology-test", Message: "An assertion does not check the result"}}}
 	for _, width := range []int{30, 60, 100} {
 		lines := p.lines(width, false)
 		if len(lines) < 2 || !strings.Contains(strings.Join(lines, "\n"), "40%") {
@@ -55,10 +55,10 @@ func TestProgressShowsFilesWhileChecksAreRunning(t *testing.T) {
 
 func TestHumanReportContainsFindingsAndSanitizesControls(t *testing.T) {
 	var out bytes.Buffer
-	findings := []Finding{{Severity: "error", File: "src/a.go", Line: 12, Rule: "wrong-assertion", Confidence: .93, Message: "unexpected\x1b[2J output", Quote: "assert.True(t, ok)"}}
+	findings := []Finding{{Severity: "error", File: "src/a.go", Line: 12, Rule: "tautology-test", Confidence: .93, Message: "unexpected\x1b[2J output", Quote: "assert.True(t, ok)"}}
 	renderFindings(&out, findings, false)
 	got := out.String()
-	for _, want := range []string{"ERROR", "src/a.go:12", "wrong-assertion", "0.93", "unexpected", "assert.True"} {
+	for _, want := range []string{"ERROR", "src/a.go:12", "tautology-test", "0.93", "unexpected", "assert.True"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in %q", want, got)
 		}

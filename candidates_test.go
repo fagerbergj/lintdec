@@ -6,14 +6,12 @@ import (
 )
 
 func TestCandidateUnitsMarkOneWordPerQuestion(t *testing.T) {
-	u := Unit{Kind: "Paragraph", File: "a.md", Start: 3, End: 4, Text: "The CDN served a `checksums.txt` that lied.\nIf a change is needed, PR it and let CI apply.\nEngineers know the rules. Is Phase 3 still wanted? We'd still want a cap."}
+	u := Unit{Kind: "Paragraph", File: "a.md", Start: 3, End: 4, Text: "The CDN served a `checksums.txt` that lied.\nIf a change is needed, PR it and let CI apply.\nEngineers know the rules. The agent knows the scope. UI should feel calm. Is Phase 3 still wanted? We'd still want a cap."}
 	got := map[string]string{}
-	for _, c := range candidateUnits(u, "DOCUMENT TITLE: x", "x", "x") {
-		if c.Kind != "Sentence" {
-			got[c.Kind] += c.Text + "|"
-		}
+	for _, c := range candidateUnits(u, "DOCUMENT TITLE: x", "x") {
+		got[c.Kind] += c.Text + "|"
 	}
-	if !strings.Contains(got["ActorVerb"], "⟦lied⟧") || strings.Contains(got["ActorVerb"], "⟦know⟧") || strings.Contains(got["ActorVerb"], "⟦wanted⟧") || strings.Contains(got["ActorVerb"], "⟦want⟧") {
+	if !strings.Contains(got["ActorVerb"], "⟦lied⟧") || strings.Contains(got["ActorVerb"], "⟦know⟧") || strings.Contains(got["ActorVerb"], "⟦knows⟧") || strings.Contains(got["ActorVerb"], "⟦feel⟧") || strings.Contains(got["ActorVerb"], "⟦wanted⟧") || strings.Contains(got["ActorVerb"], "⟦want⟧") {
 		t.Errorf("ActorVerb candidates = %q", got["ActorVerb"])
 	}
 	if !strings.Contains(got["NounVerb"], "⟦PR⟧ it") {
