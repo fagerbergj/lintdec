@@ -48,6 +48,8 @@ func ruleVersion(id string) string {
 }
 
 var rules = []Rule{
+	// xunitpatterns.com answers nothing on 443 (TLS refused direct and via proxy), so
+	// this stays http; the guard tests "://" for exactly this citation.
 	{"flakey-test", "test relies on timing or scheduling", []string{"TestFunction"}, "local",
 		"The test can pass or fail depending on machine speed or scheduling: time.Sleep used to settle state, polling loops against real deadlines, comparisons involving time.Now() or elapsed durations, map or set iteration order assumed stable, or goroutines assumed to have finished.",
 		"Gerard Meszaros, xUnit Test Patterns (Erratic Test): \"One or more tests are behaving erratically; sometimes they pass and sometimes they fail.\" http://xunitpatterns.com/Erratic%20Test.html"},
@@ -92,7 +94,7 @@ var rules = []Rule{
 		"Google C++ Style Guide, TODO Comments: \"Use TODO comments for code that is temporary, a short-term solution, or good-enough but not perfect\" with a reference to a bug or owner https://google.github.io/styleguide/cppguide.html#TODO_Comments"},
 	{"iface-leaky", "interface leaks its implementation", []string{"Interface"}, "whole",
 		"The interface exposes implementation internals: parameters or results that are storage, ORM, transport, or framework types callers should not see, or methods that only make sense inside the implementation.",
-		"David L. Parnas, On the Criteria To Be Used in Decomposing Systems into Modules (CACM 1972): split modules on the design decisions likely to change; \"Each module is then designed to hide such a decision from the others.\" https://doi.org/10.1145/367177.367199"},
+		"David L. Parnas, On the Criteria To Be Used in Decomposing Systems into Modules (CACM 1972): split modules on the design decisions likely to change; \"Each module is then designed to hide such a decision from the others.\" https://doi.org/10.1145/361598.361623"},
 	{"iface-god-method", "method signature doing too much", []string{"Interface"}, "whole",
 		"A method takes so many parameters, or a bag of mostly-ignored options and callbacks, that most callers pass zero values; the signature should be split or take one options struct.",
 		"Robert C. Martin, The Interface Segregation Principle (C++ Report, 1996): \"Clients should not be forced to depend upon interfaces that they do not use.\" https://objectmentor.com/resources/articles/isp.pdf"},
