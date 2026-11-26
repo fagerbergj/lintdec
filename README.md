@@ -1,6 +1,6 @@
 # lintdec
 
-lintdec uses a model to review code and Markdown for problems a pattern matcher can't judge, such as a test that cannot fail, a stale comment, or a sentence that buries a list. Every rule cites a published source; `--list-rules` shows it. Findings are suggestions, not proof; review them before editing.
+lintdec uses a model to review code and Markdown for problems a pattern matcher can't judge, such as a test that cannot fail, a stale comment, or a sentence that buries a list. Every rule cites a primary source and links it; `--list-rules` shows the citation. Findings are suggestions, not proof; review them before editing.
 
 ## Build
 

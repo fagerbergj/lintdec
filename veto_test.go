@@ -2,6 +2,7 @@ package main
 
 import (
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -67,10 +68,12 @@ func TestDefaultOffRulesNeedAnExplicitRequest(t *testing.T) {
 	}
 }
 
+// Offline shape check, like the init() invariants in rules.go: a citation a
+// reader cannot follow is not a citation. No fetches here, so the suite stays fast.
 func TestEveryRuleHasSource(t *testing.T) {
 	for _, r := range rules {
-		if r.Source == "" {
-			t.Errorf("rule %s is missing a primary Source citation", r.ID)
+		if !strings.Contains(r.Source, "://") {
+			t.Errorf("rule %s must cite a primary source with a URL, got %q", r.ID, r.Source)
 		}
 	}
 }
