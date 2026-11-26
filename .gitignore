@@ -6,3 +6,4 @@ cover-sloplint.out
 .lintdec/
 *.vsix
 node_modules/
+__pycache__/
