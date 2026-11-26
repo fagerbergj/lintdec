@@ -52,6 +52,19 @@ func TestRuleEligibleDeterministicFilters(t *testing.T) {
 		{"md-rfc-no-ask", Unit{Kind: "Document", File: "docs/rfcs/004-cache.md", Text: "# Cache\n\nDetails."}, true},
 		{"md-rfc-no-ask", Unit{Kind: "Document", File: "docs/cache.md", Text: "# Cache\n\n## Proposal\n\nAdd LRU."}, true},
 		{"md-rfc-no-ask", Unit{Kind: "Document", File: "docs/cache.md", Text: "# Cache Eviction\n\n## Summary\n\n## Detailed design\n\nLRU."}, true},
+
+		{"test-ignored-no-reason", Unit{Kind: "TestFunction", Text: "func TestA(t *testing.T) { t.Skip(\"x\") }"}, true},
+		{"test-ignored-no-reason", Unit{Kind: "TestFunction", Text: "@Disabled\nfun check() {}"}, true},
+		{"test-ignored-no-reason", Unit{Kind: "TestFunction", Text: "func TestExit(t *testing.T) { exit(0) }"}, false},
+
+		{"test-over-mocked", Unit{Kind: "TestFunction", Text: "it('x', () => { const f = vi.fn(); })"}, true},
+		{"test-over-mocked", Unit{Kind: "TestFunction", Text: "it('x', () => { expect(1+1).toBe(2); })"}, false},
+
+		{"test-shared-state", Unit{Kind: "TestFunction", Text: "os.WriteFile(\"/tmp/a\", b, 0644)"}, true},
+		{"test-shared-state", Unit{Kind: "TestFunction", Text: "if got := add(1, 2); got != 3 { t.Fatal(got) }"}, false},
+
+		{"md-no-remediation", Unit{Kind: "Section", Text: "## Error 503 on startup\n\nLogs error."}, true},
+		{"md-no-remediation", Unit{Kind: "Section", Text: "## Installation\n\nRun npm ci."}, false},
 	}
 	for _, c := range cases {
 		r, ok := findRule(c.rule)

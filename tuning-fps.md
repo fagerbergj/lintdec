@@ -104,3 +104,11 @@ Three more rules (`40 -> 37`) are removed after a 16-rule synthetic recall lab a
 - `assert-self` and `test-except-pass`, both 100% subsumed by default-on `tautology-test` (`0.874–0.983` on every `assert-self` and `test-except-pass` plant, 0 quiet false positives).
 - `md-ambiguous-pronoun`, 0% recall even on a textbook 4×-`"it"` sentence (`< 0.50`) and 0 above-floor findings across 500 real files.
 - `comment-history` returned to `defaultOff` with a tighter veto exempting live legacy-format compatibility notes and in-test scenario timelines after producing 32/37 findings on `quack` (9 false positives + 23 regression-test provenance notes).
+
+## Added maintainability & testability rules (2026-11-26)
+
+Five pre-filtered rules (`37 -> 42`) added after blind synthetic recall lab (`18s`, Clef `systemone-1q-iso`) and 4-repo Clef dogfood (`lintdec`, `quack`, `games`, `home-server`; 972 files, 15,424 units):
+
+- **Default-on (Tier 1):** `test-shared-state` (2/2 lab recall, 0 quiet FPs; 3/3 real true positives on un-restored `process.env.QUACK_EXA_API_KEY` leaks in `quack`, 3 isolated tests cleanly vetoed, 0 FPs) and `suppression-no-reason` via dedicated `Directive` kind (9/9 real true positives on bare `eslint-disable`, `shellcheck disable`, and `# noqa` across `games` and `home-server`, 0 FPs).
+- **Opt-in (`defaultOff`, Tier 3 — 100% lab recall, 0 real FPs, 0 real hits across the 4 repos):** `test-ignored-no-reason` (3/3 lab, 0/2 quiet), `test-over-mocked` (2/2 lab, 0/1 quiet; 1 legitimate UI boundary mock cleanly vetoed at `0.962` in `quack`), and `md-no-remediation` (2/2 lab, 0/2 quiet).
+- **Rejected in dogfood (Tier 4):** `flag-argument` passed the synthetic lab (2/2, 0/2) but produced 66 findings across 4 repos, mostly normal single-boolean domain parameters (`isSoft`, `isSplitHand`, `dealerHitsSoft17`, `allowPort`, `reveal`), so it was dropped before merge.

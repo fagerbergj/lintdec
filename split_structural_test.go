@@ -25,6 +25,23 @@ func TestStructuralCommentsAreNotLinted(t *testing.T) {
 	}
 }
 
+func TestFilterCommentsReKindsSuppressions(t *testing.T) {
+	in := []Unit{
+		{Kind: "Comment", Text: "// ----"},
+		{Kind: "Comment", Text: "//go:embed foo"},
+		{Kind: "Comment", Text: "// eslint-disable-next-line no-any"},
+		{Kind: "Comment", Text: "// @ts-expect-error legacy wire payload"},
+		{Kind: "Comment", Text: "// Normal explanation comment."},
+	}
+	got := filterComments(in)
+	if len(got) != 3 {
+		t.Fatalf("want 3 surviving units (2 Directive + 1 Comment), got %d: %+v", len(got), got)
+	}
+	if got[0].Kind != "Directive" || got[1].Kind != "Directive" || got[2].Kind != "Comment" {
+		t.Fatalf("unexpected kinds: %+v", got)
+	}
+}
+
 func TestPlaceholderBody(t *testing.T) {
 	cases := map[string]bool{
 		"<!-- list channels -->":                   true,

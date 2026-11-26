@@ -38,6 +38,11 @@ var ruleVetoes = map[string]string{
 	"md-adr-many-decisions":     "Is the document something other than an architecture decision record, or does it record one decision with its parts?",
 	"md-adr-no-cost":            "Is the document something other than an architecture decision record, or does it name at least one cost, downside, risk, or piece of follow-up work?",
 	"md-one-sided-alternatives": "Does the document name no rejected alternatives, give at least one of them a real advantage, or is it something other than a decision document, such as a tracking table?",
+	"test-ignored-no-reason":    "Is the test in TARGET skipped only conditionally for a runtime environment requirement (such as OS, missing optional credential, or short mode) or tied to a named issue or ticket?",
+	"test-over-mocked":          "Do the mocks or fakes in TARGET only replace external boundaries (such as network, filesystem, clock, or third-party services) while exercising real production logic and asserting real outcomes?",
+	"test-shared-state":         "Does the test in TARGET isolate every file, port, or environment change (using a temp directory helper, ephemeral port, or explicit restore/cleanup) so it cannot leak into sibling tests?",
+	"suppression-no-reason":     "Does the suppression comment in TARGET (or an immediately adjacent comment in CONTEXT) state a concrete technical reason why the disabled check does not apply or why the bypass is safe?",
+	"md-no-remediation":         "Does the section in TARGET either give concrete steps to fix or work around the failure, link directly to remediation steps, or explicitly explain that no user action is required?",
 }
 
 // ruleFloors: tuned per rule on labeled findings, with 30% of files held out; unlisted rules need 0.75.
@@ -64,6 +69,7 @@ var defaultOff = map[string]bool{
 	"md-noun-as-verb": true, "md-hidden-verb": true,
 	"md-one-sided-alternatives": true, "md-one-topic": true, "md-rfc-no-ask": true, "md-two-names": true,
 	"md-topic-sentence": true, "md-adr-many-decisions": true, "md-adr-no-cost": true,
+	"test-ignored-no-reason": true, "test-over-mocked": true, "md-no-remediation": true,
 }
 
 func ruleFloor(id string) float64 {
