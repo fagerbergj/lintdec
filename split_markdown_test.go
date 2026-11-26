@@ -115,6 +115,17 @@ func TestMarkdownWholeUnitsSkipMetadataAndCode(t *testing.T) {
 		if strings.Contains(u.Text, "make install") || strings.Contains(u.Text, "```") {
 			t.Errorf("%s text includes fenced code:\n%s", u.Kind, u.Text)
 		}
+		if !strings.Contains(u.Text, "[sh code block]") {
+			t.Errorf("%s text missing fenced-code placeholder:\n%s", u.Kind, u.Text)
+		}
+	}
+	codeOnly := "# Doc\n\n## Code Only\n\n```\nmake build\n```\n"
+	if got := unitsOf("Section", splitMarkdown("codeonly.md", []byte(codeOnly))); len(got) != 0 {
+		t.Errorf("code-only section should remain skipped as placeholder, got %+v", got)
+	}
+	plainFence := "# Doc\n\n## Usage\n\nRun this:\n\n```\nlintdec .\n```\n"
+	if got := unitsOf("Section", splitMarkdown("plain.md", []byte(plainFence))); len(got) != 1 || !strings.Contains(got[0].Text, "[code block]") {
+		t.Errorf("plain fence section should keep [code block] placeholder, got %+v", got)
 	}
 	if strings.Contains(doc.Text, "title: Widget Guide") || len(strings.Split(doc.Text, "\n")) != doc.End {
 		t.Errorf("document must blank front matter and keep one text line per file line")

@@ -248,19 +248,47 @@ func addMarkdownStructure(path string, lines []string, units []Unit) []Unit {
 	return units
 }
 
-// proseLines blanks front matter and fenced code, keeping line count so line numbers still hold.
+// proseLines blanks front matter and fenced code bodies while leaving a placeholder on each
+// opening fence so Section/Document rules see that code exists without linting code as prose.
 func proseLines(lines []string) []string {
 	out := slices.Clone(lines)
 	fence, meta := false, frontMatterEnd(lines)
 	for i := range out {
-		if strings.HasPrefix(strings.TrimSpace(out[i]), "```") {
-			fence = !fence
+		if i < meta {
 			out[i] = ""
-		} else if fence || i < meta {
+			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(out[i]), "```") {
+			if fence {
+				out[i] = ""
+			} else {
+				out[i] = fencePlaceholder(out[i])
+			}
+			fence = !fence
+		} else if fence {
 			out[i] = ""
 		}
 	}
 	return out
+}
+
+func fencePlaceholder(line string) string {
+	if fs := strings.Fields(strings.TrimLeft(strings.TrimSpace(line), "`")); len(fs) > 0 {
+		return "[" + fs[0] + " code block]"
+	}
+	return "[code block]"
+}
+
+func isCodePlaceholder(t string) bool {
+	if t == "[code block]" {
+		return true
+	}
+	inner, ok := strings.CutPrefix(t, "[")
+	if !ok {
+		return false
+	}
+	lang, ok := strings.CutSuffix(inner, " code block]")
+	return ok && lang != "" && !strings.ContainsAny(lang, " \t")
 }
 
 // headingPaths: the headings outside code fences, and the "A > B" heading path in force at each line.
@@ -468,7 +496,7 @@ func placeholderBody(body []string) bool {
 	for _, l := range strings.Split(text, "\n") {
 		t := strings.TrimSpace(l)
 		switch {
-		case strings.Trim(t, "-*+ ") == "", strings.HasPrefix(t, "#"), placeholderLine.MatchString(t): // blank, bare bullet, heading, or TBD
+		case strings.Trim(t, "-*+ ") == "", strings.HasPrefix(t, "#"), placeholderLine.MatchString(t), isCodePlaceholder(t): // blank, bare bullet, heading, TBD, or code block
 		case strings.HasPrefix(t, "|"):
 			if strings.Trim(t, "|-: ") == "" {
 				header = false // separator row; rows after it are data
