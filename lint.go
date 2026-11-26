@@ -473,8 +473,8 @@ func runPool(ctx context.Context, jobs []job, o lintOpts, cl *client, ch *cache,
 			}
 			mu.Unlock()
 			if first {
-				prog.warn(fmt.Sprintf("fatal: %v (stopping remaining checks)", err))
 				cancelPool()
+				prog.warn(fmt.Sprintf("fatal: %v (stopping remaining checks; re-run to resume from cache)", err))
 			}
 			return
 		}
