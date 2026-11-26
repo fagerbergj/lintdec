@@ -19,7 +19,7 @@ func TestCacheKeysIncludeProviderEndpoint(t *testing.T) {
 	cache := newCache(true)
 	a := &client{base: "https://first.example/v1", model: "same"}
 	b := &client{base: "https://second.example/v1", model: "same"}
-	if cache.key(a.cacheModel(), "0", "comment-long", unit) == cache.key(b.cacheModel(), "0", "comment-long", unit) {
+	if cache.key(a.cacheModel(), "0", "comment-long", a.cacheRuleVersion("comment-long"), unit) == cache.key(b.cacheModel(), "0", "comment-long", b.cacheRuleVersion("comment-long"), unit) {
 		t.Fatal("different providers must not share cached verdicts")
 	}
 }
@@ -318,5 +318,74 @@ func TestParseVerdictsSkipsEarlierProseBraces(t *testing.T) {
 	got, missing, err := parseVerdicts(raw, j)
 	if err != nil || len(missing) != 0 || got["comment-long"].Lint {
 		t.Fatalf("parseVerdicts failed with prose braces: got=%+v missing=%v err=%v", got, missing, err)
+	}
+}
+
+func TestDecodeCompletionFallsBackToReasoning(t *testing.T) {
+	body := `{"choices":[{"message":{"content":"  \n","reasoning":"{\"comment-long\":{\"lint\":false}}"}}]}`
+	var usage *chatUsage
+	got, err := decodeCompletion(strings.NewReader(body), &usage)
+	if err != nil || !strings.Contains(got, "comment-long") {
+		t.Fatalf("reasoning fallback failed: got=%q err=%v", got, err)
+	}
+}
+
+func TestParseVerdictsUnbalancedFallback(t *testing.T) {
+	r, _ := findRule("comment-long")
+	j := job{unit: Unit{Kind: "Comment", File: "a.go", Start: 1, End: 1}, rules: []Rule{r}}
+	raw := "unclosed { prefix {\"comment-long\":{\"lint\":false}}"
+	if _, _, err := parseVerdicts(raw, j); err == nil {
+		t.Fatal("expected error for unbalanced braces before JSON")
+	}
+	if _, ok := extractJSONObject("no braces here"); ok {
+		t.Fatal("expected false when no closing brace exists")
+	}
+}
+
+func TestSystemOnePartialRetryKeepsSucceededVerdicts(t *testing.T) {
+	var seen []string
+	var failOnce atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Questions map[string]map[string]any `json:"questions"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		for id := range body.Questions {
+			seen = append(seen, id)
+			if id == "todo-no-owner" && !failOnce.Swap(true) {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]any{
+				"answers": map[string]any{id: map[string]any{"type": "noul", "noul": 0.9}},
+			})
+		}
+	}))
+	defer srv.Close()
+
+	r1, _ := findRule("comment-long")
+	r2, _ := findRule("todo-no-owner")
+	cl := &client{base: srv.URL, protocol: "systemone", model: "clef", threshold: 0.75, httpc: srv.Client()}
+	j := job{unit: Unit{Kind: "Comment", File: "a.go", Start: 1, End: 1, Text: "// TODO"}, rules: []Rule{r1, r2}}
+	got, err := runWithRetry(context.Background(), cl, j)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("got=%+v err=%v", got, err)
+	}
+	if !slices.Equal(seen, []string{"comment-long", "todo-no-owner", "todo-no-owner"}) {
+		t.Errorf("succeeded rule was re-requested on retry: %v", seen)
+	}
+}
+
+func TestCacheKeyUsesBatchVersionForChatAndPerRuleForSystemOne(t *testing.T) {
+	chat := &client{base: "http://x/v1", model: "m"}
+	s1 := &client{base: "http://x/v1", protocol: "systemone", model: "m"}
+	if chat.cacheRuleVersion("comment-long") != allRulesVersion {
+		t.Errorf("chat should use catalogue version, got %q", chat.cacheRuleVersion("comment-long"))
+	}
+	if s1.cacheRuleVersion("comment-long") != ruleVersion("comment-long") {
+		t.Errorf("systemone should use per-rule version, got %q", s1.cacheRuleVersion("comment-long"))
+	}
+	if s1.cacheRuleVersion("comment-long") == s1.cacheRuleVersion("todo-no-owner") {
+		t.Error("distinct rules should have distinct per-rule versions")
 	}
 }

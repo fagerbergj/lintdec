@@ -240,19 +240,55 @@ export const run = () => {
 	units := splitTree("run.ts", []byte(src), tsLangs["ts"])
 	var comments []Unit
 	for _, u := range units {
-		if u.Kind == "Comment" {
+		if u.Kind == "Comment" && !structuralComment(u) {
 			comments = append(comments, u)
 		}
 	}
 	if len(comments) != 2 {
-		t.Fatalf("want 2 Comment units (grouped 2-line doc + inline note, skipping shebang & ignore), got %d: %+v", len(comments), comments)
+		t.Fatalf("want 2 non-structural Comment units (grouped 2-line doc + inline note, skipping shebang & ignore), got %d: %+v", len(comments), comments)
 	}
 	if comments[0].Start != 2 || comments[0].End != 3 {
 		t.Errorf("doc comment split wrong: lines %d-%d, want 2-3", comments[0].Start, comments[0].End)
 	}
-	if !strings.Contains(comments[1].Text, "inline note") {
-		t.Errorf("missing inline comment: %+v", comments[1])
+	if !strings.Contains(comments[1].Text, "inline note") || comments[1].Start != 6 {
+		t.Errorf("missing or merged inline comment: %+v", comments[1])
 	}
+}
+
+func TestIsFnExprWrappers(t *testing.T) {
+	src := `const a = ((x: number) => x + 1);
+const b = ((x: number) => x + 1) as (x: number) => number;
+const c = ((x: number) => x + 1) satisfies (x: number) => number;
+const d = function (x: number) { return x + 1; };
+const e = (123) as number;
+`
+	units := splitTree("wrappers.ts", []byte(src), tsLangs["ts"])
+	if n := countKind(units, "Function"); n != 4 {
+		t.Errorf("want 4 Function units (paren, as, satisfies, function_expression; not number), got %d: %+v", n, units)
+	}
+}
+
+func TestTreeCommentContextInsideFunction(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("export function process(firstLineToken: string) {\n")
+	for range 12 {
+		b.WriteString("  const step = 1;\n")
+	}
+	b.WriteString("  // references firstLineToken and lastLineToken\n")
+	for range 12 {
+		b.WriteString("  const more = 2;\n")
+	}
+	b.WriteString("  return 'lastLineToken';\n}\n")
+	units := splitTree("inside.ts", []byte(b.String()), tsLangs["ts"])
+	for _, u := range units {
+		if u.Kind == "Comment" {
+			if !strings.Contains(u.Context, "firstLineToken") || !strings.Contains(u.Context, "lastLineToken") {
+				t.Errorf("in-function comment context missed enclosing declaration:\n%s", u.Context)
+			}
+			return
+		}
+	}
+	t.Fatal("missing Comment unit")
 }
 
 func TestTreeCommentContextCoversFollowingFunction(t *testing.T) {

@@ -174,7 +174,7 @@ func splitTree(path string, src []byte, cfg tsCfg) []Unit {
 		}
 	}
 	walk(root)
-	units = append(units, collectComments(root, path, src, lines)...)
+	units = append(units, collectComments(root, path, cfg, src, lines)...)
 
 	// File skeleton from top-level declarations.
 	var sk []string
@@ -235,13 +235,13 @@ func attachesDoc(c *sitter.Node, cfg tsCfg, src []byte) bool {
 
 // collectComments walks the whole tree and groups contiguous full-line comment
 // runs into Comment units with surrounding declaration or +-8 line context.
-func collectComments(root *sitter.Node, path string, src []byte, lines []string) []Unit {
+func collectComments(root *sitter.Node, path string, cfg tsCfg, src []byte, lines []string) []Unit {
 	var nodes []*sitter.Node
 	var visit func(n *sitter.Node)
 	visit = func(n *sitter.Node) {
 		if strings.Contains(n.Type(), "comment") {
 			txt := n.Content(src)
-			if !(n.StartPoint().Row == 0 && strings.HasPrefix(txt, "#!")) && !strings.Contains(txt, "lintdec:ignore") {
+			if !(n.StartPoint().Row == 0 && strings.HasPrefix(txt, "#!")) {
 				nodes = append(nodes, n)
 			}
 			return
@@ -257,7 +257,7 @@ func collectComments(root *sitter.Node, path string, src []byte, lines []string)
 		first, last := nodes[i], nodes[i]
 		parts := []string{first.Content(src)}
 		j := i + 1
-		for j < len(nodes) && canMergeComment(last, nodes[j], lines) {
+		for j < len(nodes) && canMergeComment(last, nodes[j], lines, src) {
 			last = nodes[j]
 			parts = append(parts, last.Content(src))
 			j++
@@ -266,31 +266,54 @@ func collectComments(root *sitter.Node, path string, src []byte, lines []string)
 		out = append(out, Unit{
 			Kind: "Comment", File: path, Start: s, End: e,
 			Text:    strings.Join(parts, "\n"),
-			Context: treeCommentContext(lines, last, s, e),
+			Context: treeCommentContext(lines, last, s, e, cfg, src),
 		})
 		i = j
 	}
 	return out
 }
 
-// treeCommentContext mirrors goCommentContext: a doc comment above a bounded
-// declaration sees the whole declaration in addition to +-8 nearby lines.
-func treeCommentContext(lines []string, last *sitter.Node, s, e int) string {
-	if nxt := last.NextSibling(); nxt != nil && int(nxt.StartPoint().Row)+1 <= e+1 {
-		de := min(int(nxt.EndPoint().Row)+1, len(lines))
-		if de-s <= rawBudgetLines {
+// treeCommentContext mirrors goCommentContext: a comment above or inside a
+// bounded declaration sees the whole declaration in addition to +-8 nearby lines.
+func treeCommentContext(lines []string, last *sitter.Node, s, e int, cfg tsCfg, src []byte) string {
+	nxt := last.NextSibling()
+	if nxt != nil && isUnitStart(nxt, cfg, src) && int(nxt.StartPoint().Row)+1 <= e+1 {
+		if de := min(int(nxt.EndPoint().Row)+1, len(lines)); de-s <= rawBudgetLines {
+			return numberedContext(lines, s-8, max(de, e+8), s, e)
+		}
+	}
+	for p := last.Parent(); p != nil; p = p.Parent() {
+		if !isUnitStart(p, cfg, src) {
+			continue
+		}
+		ds, de := int(p.StartPoint().Row)+1, min(int(p.EndPoint().Row)+1, len(lines))
+		if de-ds <= rawBudgetLines {
+			return numberedContext(lines, min(ds, s-8), max(de, e+8), s, e)
+		}
+		break
+	}
+	if nxt != nil && int(nxt.StartPoint().Row)+1 <= e+1 {
+		if de := min(int(nxt.EndPoint().Row)+1, len(lines)); de-s <= rawBudgetLines {
 			return numberedContext(lines, s-8, max(de, e+8), s, e)
 		}
 	}
 	return commentContext(lines, s, e)
 }
 
-func canMergeComment(a, b *sitter.Node, lines []string) bool {
+func canMergeComment(a, b *sitter.Node, lines []string, src []byte) bool {
 	if b.StartPoint().Row != a.EndPoint().Row+1 || b.StartPoint().Column != a.StartPoint().Column {
+		return false
+	}
+	if isDirectiveComment(a, src) || isDirectiveComment(b, src) {
 		return false
 	}
 	return isCommentOnlyLine(lines, int(a.StartPoint().Row), int(a.StartPoint().Column)) &&
 		isCommentOnlyLine(lines, int(b.StartPoint().Row), int(b.StartPoint().Column))
+}
+
+func isDirectiveComment(n *sitter.Node, src []byte) bool {
+	t := strings.TrimSpace(commentMarker.ReplaceAllString(n.Content(src), ""))
+	return toolDirective.MatchString(t)
 }
 
 func isCommentOnlyLine(lines []string, row, col int) bool {
@@ -376,11 +399,6 @@ func isFnExpr(n *sitter.Node) bool {
 				return false
 			}
 			n = n.NamedChild(0)
-		case "type_assertion":
-			if n.NamedChildCount() < 2 {
-				return false
-			}
-			n = n.NamedChild(int(n.NamedChildCount()) - 1)
 		default:
 			return false
 		}

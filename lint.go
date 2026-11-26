@@ -460,7 +460,7 @@ func runPool(ctx context.Context, jobs []job, o lintOpts, cl *client, ch *cache,
 		verdicts := make(map[string]Verdict, len(j.rules))
 		var todo []Rule
 		for _, r := range j.rules {
-			if v, ok := ch.get(ch.key(cl.cacheModel(), tempStr, r.ID, j.unit)); ok {
+			if v, ok := ch.get(ch.key(cl.cacheModel(), tempStr, r.ID, cl.cacheRuleVersion(r.ID), j.unit)); ok {
 				if cl.protocol == "systemone" {
 					v = applySystemOneThreshold(v, cl.threshold)
 				}
@@ -475,6 +475,10 @@ func runPool(ctx context.Context, jobs []job, o lintOpts, cl *client, ch *cache,
 		}
 		if len(todo) > 0 {
 			v, err := runWithRetry(ctx, cl, job{unit: j.unit, rules: todo})
+			for id, vv := range v {
+				ch.put(ch.key(cl.cacheModel(), tempStr, id, cl.cacheRuleVersion(id), j.unit), vv)
+				verdicts[id] = vv
+			}
 			if errors.Is(err, errBudgetExhausted) {
 				mu.Lock()
 				res.budgetSkipped++
@@ -486,7 +490,9 @@ func runPool(ctx context.Context, jobs []job, o lintOpts, cl *client, ch *cache,
 				mu.Lock()
 				res.errs++
 				for _, r := range todo {
-					res.erroredKeys = append(res.erroredKeys, fmt.Sprintf("%s|%s|%d|%d", r.ID, j.unit.File, j.unit.Start, j.unit.End))
+					if _, ok := verdicts[r.ID]; !ok {
+						res.erroredKeys = append(res.erroredKeys, fmt.Sprintf("%s|%s|%d|%d", r.ID, j.unit.File, j.unit.Start, j.unit.End))
+					}
 				}
 				show := res.errs <= 5 && ctx.Err() == nil
 				mu.Unlock()
@@ -495,10 +501,6 @@ func runPool(ctx context.Context, jobs []job, o lintOpts, cl *client, ch *cache,
 				}
 				prog.tick(time.Since(start), false, fmt.Sprintf("%s:%d · error", j.unit.File, j.unit.Start))
 				return
-			}
-			for id, vv := range v {
-				ch.put(ch.key(cl.cacheModel(), tempStr, id, j.unit), vv)
-				verdicts[id] = vv
 			}
 		}
 		for _, r := range j.rules {

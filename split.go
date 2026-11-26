@@ -404,16 +404,18 @@ func digestFor(u Unit, lines []string) string {
 		}
 		keep := ln <= u.Start+2
 		if !keep {
+			kw := strings.TrimSpace(strings.TrimPrefix(s, "}"))
 			switch {
-			case strings.HasPrefix(s, "if "), strings.HasPrefix(s, "if("),
-				strings.HasPrefix(s, "switch "), strings.HasPrefix(s, "switch("),
-				strings.HasPrefix(s, "for "), strings.HasPrefix(s, "for("),
-				strings.HasPrefix(s, "while "), strings.HasPrefix(s, "while("),
-				strings.HasPrefix(s, "try "), strings.HasPrefix(s, "try{"), strings.HasPrefix(s, "try:"),
-				strings.HasPrefix(s, "catch "), strings.HasPrefix(s, "catch("), strings.HasPrefix(s, "catch{"),
-				strings.HasPrefix(s, "except "), strings.HasPrefix(s, "except:"),
-				strings.HasPrefix(s, "throw "), strings.HasPrefix(s, "raise "),
-				strings.HasPrefix(s, "return "), strings.HasPrefix(s, "defer "), strings.HasPrefix(s, "go "),
+			case strings.HasPrefix(kw, "if "), strings.HasPrefix(kw, "if("),
+				strings.HasPrefix(kw, "else "),
+				strings.HasPrefix(kw, "switch "), strings.HasPrefix(kw, "switch("),
+				strings.HasPrefix(kw, "for "), strings.HasPrefix(kw, "for("),
+				strings.HasPrefix(kw, "while "), strings.HasPrefix(kw, "while("),
+				strings.HasPrefix(kw, "try "), strings.HasPrefix(kw, "try{"), strings.HasPrefix(kw, "try:"),
+				strings.HasPrefix(kw, "catch "), strings.HasPrefix(kw, "catch("), strings.HasPrefix(kw, "catch{"),
+				strings.HasPrefix(kw, "except "), strings.HasPrefix(kw, "except:"),
+				strings.HasPrefix(kw, "throw "), strings.HasPrefix(kw, "raise "),
+				strings.HasPrefix(kw, "return "), strings.HasPrefix(kw, "defer "), strings.HasPrefix(kw, "go "),
 				strings.Contains(s, "assert."), strings.Contains(s, "assert("), strings.Contains(s, "expect("),
 				strings.Contains(s, "require."),
 				strings.Contains(s, "t.Error"), strings.Contains(s, "t.Fatal"), strings.Contains(s, "t.Log"):
@@ -430,7 +432,7 @@ func digestFor(u Unit, lines []string) string {
 var (
 	commentMarker = regexp.MustCompile(`^\s*(//+|#+|/\*+|\*+/?|--|;+)\s?`)
 	ruleLine      = regexp.MustCompile(`^[^\p{L}\p{N}]{3,}$`)
-	toolDirective = regexp.MustCompile(`^(shellcheck|eslint|prettier-ignore|@ts-|nolint|noqa|go:|lint:|pylint|type: ?ignore|istanbul|c8 |biome-ignore|ktlint|tslint|jshint|NOSONAR|region|endregion)`)
+	toolDirective = regexp.MustCompile(`^(shellcheck|eslint|prettier-ignore|@ts-|nolint|noqa|go:|lint:|lintdec:ignore|pylint|type: ?ignore|istanbul|c8 |biome-ignore|ktlint|tslint|jshint|NOSONAR|region|endregion)`)
 )
 
 // structuralComment: section banners and tool directives look like comments but say nothing to lint,

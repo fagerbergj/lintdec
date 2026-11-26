@@ -17,16 +17,33 @@ type Rule struct {
 	Source  string // catalogue id, source, quote, URL: the published rule this one enforces
 }
 
-// ruleVersion folds the system prompt and one rule's rubric and veto into a
-// hash so editing a single rule invalidates only that rule's cached verdicts.
-func ruleVersion(id string) string {
-	h := sha256.New()
-	h.Write([]byte(systemPrompt))
-	if r, ok := findRule(id); ok {
-		h.Write([]byte("\x00" + r.ID + "\x00" + r.Summary + "\x00" + r.Rubric + "\x00" + r.Scope + "\x00" + ruleVetoes[r.ID]))
-	} else {
-		h.Write([]byte("\x00" + id))
+// allRulesVersion hashes the full catalogue for batched chat prompts;
+// ruleVersions hashes one rule + its veto for single-rule systemone calls.
+var (
+	allRulesVersion string
+	ruleVersions    map[string]string
+)
+
+func init() {
+	all := sha256.New()
+	all.Write([]byte(systemPrompt))
+	ruleVersions = make(map[string]string, len(rules))
+	for _, r := range rules {
+		entry := r.ID + "\x00" + r.Summary + "\x00" + r.Rubric + "\x00" + r.Scope + "\x00" + ruleVetoes[r.ID]
+		all.Write([]byte(entry))
+		one := sha256.New()
+		one.Write([]byte(systemPrompt + "\x00" + entry))
+		ruleVersions[r.ID] = hex.EncodeToString(one.Sum(nil))
 	}
+	allRulesVersion = hex.EncodeToString(all.Sum(nil))
+}
+
+func ruleVersion(id string) string {
+	if v, ok := ruleVersions[id]; ok {
+		return v
+	}
+	h := sha256.New()
+	h.Write([]byte(systemPrompt + "\x00" + id))
 	return hex.EncodeToString(h.Sum(nil))
 }
 

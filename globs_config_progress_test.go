@@ -129,7 +129,7 @@ func TestProgressSeverityTotals(t *testing.T) {
 	for range 20 {
 		p2.tick(3*time.Second, false, "ok") // 6 parallel workers: 20 done in 10s = 2/s
 	}
-	if r := p2.callsPerSec(); r < 1.5 || r > 2.5 {
-		t.Errorf("callsPerSec = %.2f, want ~2.0 (wall-clock aggregate)", r)
+	if r := p2.checksPerSec(); r < 1.5 || r > 2.5 {
+		t.Errorf("checksPerSec = %.2f, want ~2.0 (wall-clock aggregate)", r)
 	}
 }

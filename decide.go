@@ -67,6 +67,13 @@ func (c *client) cacheTemp() string {
 	return fmt.Sprintf("%v", c.temp)
 }
 
+func (c *client) cacheRuleVersion(ruleID string) string {
+	if c.protocol == "systemone" {
+		return ruleVersion(ruleID)
+	}
+	return allRulesVersion
+}
+
 type Verdict struct {
 	Lint       bool     `json:"lint"`
 	Severity   string   `json:"severity"`
@@ -150,7 +157,7 @@ func (c *client) callSystemOne(ctx context.Context, j job) (map[string]Verdict, 
 	for _, r := range j.rules {
 		v, err := c.callSystemOneRule(ctx, stateStr, r)
 		if err != nil {
-			return nil, err
+			return out, err
 		}
 		out[r.ID] = v
 	}
@@ -449,12 +456,12 @@ func newCache(on bool) *cache {
 	return &cache{dir: filepath.Join(dir, "lintdec", "cache"), on: on}
 }
 
-func (c *cache) key(model, tempStr, ruleID string, u Unit) string {
+func (c *cache) key(model, tempStr, ruleID, version string, u Unit) string {
 	h := sha256.New()
 	abs, _ := filepath.Abs(u.File)
-	// ruleVersion folds the system prompt and this rule's rubric/veto into the
-	// key, so editing one rule invalidates only its cached verdicts.
-	fmt.Fprintf(h, "%s|%s|%s|%s|%s|%s\n%s\n%s", model, tempStr, ruleID, u.Kind, ruleVersion(ruleID), abs, u.Text, u.Context)
+	// version is per-rule for systemone (1 rule per prompt) and catalogue-wide
+	// for batched chat prompts, so rubric edits invalidate every affected verdict.
+	fmt.Fprintf(h, "%s|%s|%s|%s|%s|%s\n%s\n%s", model, tempStr, ruleID, u.Kind, version, abs, u.Text, u.Context)
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -484,10 +491,11 @@ func (c *cache) put(k string, v Verdict) {
 	os.WriteFile(filepath.Join(c.dir, k+".json"), b, 0o644)
 }
 
-// runWithRetry calls the model for the batch with up to three attempts.
-// 429s (gateway concurrency limit) get a long backoff; ctx cancels immediately.
+// runWithRetry calls the model for the batch with up to three attempts,
+// keeping any partial verdicts returned before a transient failure.
 func runWithRetry(ctx context.Context, c *client, j job) (map[string]Verdict, error) {
-	var v map[string]Verdict
+	merged := make(map[string]Verdict, len(j.rules))
+	pending := j.rules
 	var err error
 	for attempt := range 3 {
 		if attempt > 0 {
@@ -498,13 +506,30 @@ func runWithRetry(ctx context.Context, c *client, j job) (map[string]Verdict, er
 			select {
 			case <-time.After(wait):
 			case <-ctx.Done():
-				return nil, ctx.Err()
+				return merged, ctx.Err()
 			}
 		}
-		v, err = c.call(ctx, j)
+		var v map[string]Verdict
+		v, err = c.call(ctx, job{unit: j.unit, rules: pending})
+		maps.Copy(merged, v)
 		if err == nil || errors.Is(err, errBudgetExhausted) || ctx.Err() != nil {
 			break
 		}
+		pending = unansweredRules(pending, merged)
+		if len(pending) == 0 {
+			err = nil
+			break
+		}
 	}
-	return v, err
+	return merged, err
+}
+
+func unansweredRules(rules []Rule, done map[string]Verdict) []Rule {
+	var rest []Rule
+	for _, r := range rules {
+		if _, ok := done[r.ID]; !ok {
+			rest = append(rest, r)
+		}
+	}
+	return rest
 }

@@ -24,7 +24,6 @@ type progress struct {
 	cached    int
 	skipped   int
 	start     time.Time
-	emaSec    float64
 	calls     int
 	last      string
 	active    map[string]int
@@ -52,11 +51,6 @@ func (p *progress) tick(d time.Duration, cached bool, last string) {
 	}
 	if d > 0 && !cached {
 		p.calls++
-		if p.emaSec == 0 {
-			p.emaSec = d.Seconds()
-		} else {
-			p.emaSec = 0.7*p.emaSec + 0.3*d.Seconds()
-		}
 	}
 	p.last = last
 	if p.quiet {
@@ -118,7 +112,7 @@ func (p *progress) endFile(file string) {
 	}
 }
 
-func (p *progress) callsPerSec() float64 {
+func (p *progress) checksPerSec() float64 {
 	if p.calls == 0 {
 		return 0
 	}
@@ -130,7 +124,7 @@ func (p *progress) callsPerSec() float64 {
 }
 
 func (p *progress) rate() string {
-	r := p.callsPerSec()
+	r := p.checksPerSec()
 	if r <= 0 {
 		return "—"
 	}
@@ -138,7 +132,7 @@ func (p *progress) rate() string {
 }
 
 func (p *progress) eta() string {
-	r := p.callsPerSec()
+	r := p.checksPerSec()
 	if r <= 0 {
 		return "—"
 	}
