@@ -258,7 +258,7 @@ func TestSystemOneCallAndHealth(t *testing.T) {
 			if !strings.Contains(body.State, "TODO: fix") || len(body.Questions) != 1 {
 				t.Errorf("want 1 rule per systemone call, got: %+v", body)
 			}
-			scores := map[string]float64{"comment-long": 0.12, "todo-no-owner": 0.93}
+			scores := map[string]float64{"comment-tautology": 0.12, "todo-no-owner": 0.93}
 			answers := map[string]any{}
 			for id := range body.Questions {
 				answers[id] = map[string]any{"type": "noul", "noul": scores[id]}
@@ -278,7 +278,7 @@ func TestSystemOneCallAndHealth(t *testing.T) {
 		t.Fatalf("fetchModels systemone: %v %v", models, err)
 	}
 
-	r1, _ := findRule("comment-long")
+	r1, _ := findRule("comment-tautology")
 	r2, _ := findRule("todo-no-owner")
 	cl := &client{base: srv.URL, protocol: "systemone", model: models[0], threshold: 0.75, httpc: srv.Client()}
 	j := job{unit: Unit{Kind: "Comment", File: "a.go", Start: 1, End: 1, Text: "// TODO: fix"}, rules: []Rule{r1, r2}}
@@ -286,8 +286,8 @@ func TestSystemOneCallAndHealth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("systemone call error: %v", err)
 	}
-	if got["comment-long"].Lint {
-		t.Errorf("comment-long should be clean at 0.12: %+v", got["comment-long"])
+	if got["comment-tautology"].Lint {
+		t.Errorf("comment-tautology should be clean at 0.12: %+v", got["comment-tautology"])
 	}
 	v := got["todo-no-owner"]
 	if !v.Lint || v.Severity != "high" || v.Confidence != 0.93 || v.Reason != r2.Summary {
@@ -387,7 +387,7 @@ func TestSystemOnePartialRetryKeepsSucceededVerdicts(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	r1, _ := findRule("comment-long")
+	r1, _ := findRule("comment-tautology")
 	r2, _ := findRule("todo-no-owner")
 	cl := &client{base: srv.URL, protocol: "systemone", model: "clef", threshold: 0.75, httpc: srv.Client()}
 	j := job{unit: Unit{Kind: "Comment", File: "a.go", Start: 1, End: 1, Text: "// TODO"}, rules: []Rule{r1, r2}}
@@ -397,7 +397,7 @@ func TestSystemOnePartialRetryKeepsSucceededVerdicts(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if !slices.Equal(seen, []string{"comment-long", "todo-no-owner", "todo-no-owner"}) {
+	if !slices.Equal(seen, []string{"comment-tautology", "todo-no-owner", "todo-no-owner"}) {
 		t.Errorf("succeeded rule was re-requested on retry: %v", seen)
 	}
 }

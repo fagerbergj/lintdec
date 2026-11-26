@@ -15,7 +15,7 @@ import (
 // word, the split Clark, Martin & Mahowald (arXiv:2610.29162) used with Jev.
 
 // spanKinds are units whose Text is one sentence with the judged word marked ⟦like this⟧.
-var spanKinds = map[string]bool{"ActorVerb": true, "NounVerb": true, "Sentence": true, "WordyPhrase": true}
+var spanKinds = map[string]bool{"ActorVerb": true, "NounVerb": true, "WordyPhrase": true}
 
 // tagModel is loaded once; nil (tagging off) if the embedded model fails to load.
 var tagModel = sync.OnceValue(func() *prose.Model {
@@ -169,9 +169,9 @@ func mark(s string, toks []tagged, i int) (string, int) {
 }
 
 // mindVerbs need a mind: a thing that knows or wants is personified (both judges agreed on every
-// labeled case), while refuse and decide have literal technical senses and split them 60/40.
+// labeled case), while refuse, decide, and feel have literal technical/UX senses.
 var mindVerbs = toSet("know knows knew want wants wanted think thinks thought believe believes believed " +
-	"understand understands understood wish wishes hope hopes like likes love loves hate hates feel feels felt " +
+	"understand understands understood wish wishes hope hopes like likes love loves hate hates " +
 	"care cares fear fears remember remembers forget forgets forgot learn learns learned lie lies lied " +
 	"pretend pretends worry worries trust trusts realize realizes realized notice notices prefer prefers " +
 	"enjoy enjoys complain complains insist insists agree agrees disagree disagrees")
@@ -183,7 +183,8 @@ var plainVerbs = toSet("is are was were be been has have had does do did can cou
 
 var personPronouns = toSet("i you he she we they who someone everyone anyone people " +
 	"user users engineer engineers developer developers team teams owner owners reviewer reviewers admin admins " +
-	"customer customers author authors reader readers operator operators member members maintainer maintainers")
+	"customer customers author authors reader readers operator operators member members maintainer maintainers " +
+	"agent agents llm llms model models assistant assistants")
 
 var wordToken = regexp.MustCompile(`^[A-Za-z][a-z]+$|^[A-Z]{2,}s?$`)
 
@@ -282,22 +283,16 @@ func withoutQuotes(s string) (string, func(int) int) {
 	}
 }
 
-// candidateUnits: per-word and per-sentence units for one prose block.
-func candidateUnits(u Unit, header, heading, outline string) []Unit {
+// candidateUnits: per-word and per-phrase units for one prose block.
+func candidateUnits(u Unit, header, heading string) []Unit {
 	ctx := header + "\nHEADING: " + heading + "\nPARAGRAPH:\n" + u.Text
 	var out []Unit
 	for _, sent := range blockSentences(u.Text) {
 		s := sent.text
 		toks := tagSentence(s)
 		own, inS := withoutQuotes(s)
-		// Sentence units cover the lines the sentence spans; word and phrase units pin their own line.
-		at := Unit{File: u.File, Start: u.Start + sent.lines[0], End: u.Start + sent.lines[len(sent.lines)-1], Context: ctx}
+		at := Unit{File: u.File, Context: ctx}
 		out = append(out, markSpans("WordyPhrase", wordyPhrase, own, at, func(off int) int { return u.Start + sent.lineAt(inS(off)) })...)
-		if len(strings.Fields(own)) >= 3 {
-			whole := at
-			whole.Kind, whole.Text, whole.Context = "Sentence", own, ctx+"\nDOCUMENT HEADINGS: "+outline
-			out = append(out, whole)
-		}
 		for i := range toks {
 			var kind string
 			switch {

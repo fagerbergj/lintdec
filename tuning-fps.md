@@ -60,7 +60,7 @@ Proposed patch:
 Evidence: dotagents lab `bigfile.go:29` — `// Put stores a value, evicting the oldest slot.` on method `Put`. The first clause restates the name, but the comment adds the eviction behavior, which the name does not carry. Firing tautology here overlaps with comment-restates-name (the more precise rule) and loses the "adds information" test.
 
 Proposed patch:
-> If any clause of the comment states a mechanism, constraint or behavior the name does not state, the comment is not tautological, even if another clause restates the name. For pure name restatement with added detail, comment-restates-name is the rule.
+> If any clause of the comment states a mechanism, constraint or behavior the name does not state, the comment is not tautological, even if another clause restates the name. (Update 2026-11-26: `comment-restates-name` was later removed and pure name restatement folded into `comment-tautology` with this guard.)
 
 ## md-para-long (weak, not clear FP — review list)
 
@@ -92,3 +92,9 @@ Eight rules on the published `main` (`626ff5d`) are removed in the change that a
 - `comment-stale` and `comment-decision-record`, 0 of 17 valid across two self-lint runs: neither staleness nor decision-worthiness is visible in the comment's text. `comment-contradicts-code` (a contradiction visible in the shown code) and `comment-history` (narrated history) replace them.
 - `big-file`, replaced by `file-several-jobs`, which judges unrelated topics rather than size.
 - `md-hard-wrap`, a line-length pattern a deterministic linter checks better; and `md-table-dense` and `md-jargon`, which stayed far above 10% false. The sourced documentation rules replace them, each citing a published style rule (`lintdec --list-rules` shows the source).
+
+Seven more rules (`47 -> 40`) are removed after a 5-repo all-47-rule audit (`lintdec`, `NightsOut`, `games`, `home-server`, `dotagents`; 500 files, 11,240 batches, 49,072 Jev decisions + full Clef runs on `quack` and `lintdec`, 2026-11-26):
+
+- `md-idiom` (376 findings, ~100% false positives on normal technical prose; `Sentence` unit generation removed with it), `md-dropped-words` (74/74 false positives on terse CLI/table prose), `md-announces` (37/37 false positives on normal lead-in sentences), `md-two-ideas` (25/25 false positives on technical trade-off sentences), `wrong-assertion` (4/4 false positives even on Clef because the SUT body is not in the `TestFunction` unit), `comment-restates-name` (1/11 valid, folded into `comment-tautology` with FP-5's mechanism guard), and `commented-code` (overlapping noise on commented config/examples; deterministic checks fit better).
+- Promoted to default-on: `comment-history`, `iface-leaky`, `comment-contradicts-code`, `comment-hedge` (floor raised `0.60 -> 0.75`), and `comment-long` (paired with a `>= 3` lines or `>= 50` words pre-filter and System One veto). Moved to `defaultOff` pending synthetic recall lab: `md-topic-sentence`, `md-adr-many-decisions`, `md-adr-no-cost`.
+- Deterministic pre-filters added in `filters.go` (`ruleEligible`) cut all-rules decisions by 22.9%–43.5% across the audited repos (`lintdec` 5,941 → 4,245; `NightsOut` 2,427 → 1,872; `games` 10,842 → 7,556; `home-server` 12,943 → 7,319).

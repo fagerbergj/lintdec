@@ -202,7 +202,7 @@ func collectFiles(paths, include, exclude []string) ([]string, error) {
 func buildJobs(u Unit, active []Rule, lines []string) []job {
 	var app []Rule
 	for _, r := range active {
-		if ruleApplies(r, u.Kind) {
+		if ruleApplies(r, u.Kind) && ruleEligible(r, u) {
 			app = append(app, r)
 		}
 	}

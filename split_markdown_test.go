@@ -153,7 +153,7 @@ func TestHeadingPathsIgnoreFencesAndPopLevels(t *testing.T) {
 func TestCandidateWordsAnchorToTheirOwnLine(t *testing.T) {
 	u := Unit{Kind: "Paragraph", File: "a.md", Start: 1, End: 2, Text: "The cache knows nothing. The report\nsays the cache knows the port and it hides why."}
 	var lines []int
-	for _, c := range unitsOf("ActorVerb", candidateUnits(u, "", "", "")) {
+	for _, c := range unitsOf("ActorVerb", candidateUnits(u, "", "")) {
 		if strings.Contains(c.Text, "cache ⟦knows⟧ the port") {
 			lines = append(lines, c.Start, c.End)
 		}
@@ -211,7 +211,7 @@ func TestAbbreviationsDoNotEndSentences(t *testing.T) {
 
 func TestWordyPhraseAnchorsToItsLine(t *testing.T) {
 	u := Unit{Kind: "Paragraph", File: "a.md", Start: 10, End: 12, Text: "The job \"says the run is over now\" and\nretries the step until it\nis able to finish."}
-	got := unitsOf("WordyPhrase", candidateUnits(u, "", "", ""))
+	got := unitsOf("WordyPhrase", candidateUnits(u, "", ""))
 	if len(got) != 1 || !strings.Contains(got[0].Text, "⟦is able to⟧") || got[0].Start != 12 || got[0].End != 12 {
 		t.Fatalf("wordy phrase units = %+v, want one on line 12", got)
 	}

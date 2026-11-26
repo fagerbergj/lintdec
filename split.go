@@ -332,12 +332,8 @@ func addMarkdownStructure(path string, lines []string, units []Unit) []Unit {
 		u.Context = ctx
 	}
 	prose := slices.DeleteFunc(slices.Clone(units), func(u Unit) bool { return u.Kind != "Paragraph" && u.Kind != "Bullet" && u.Kind != "Steps" })
-	var outline []string
-	for _, h := range heads {
-		outline = append(outline, strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(lines[h.line-1]), "#")))
-	}
 	for _, u := range prose {
-		units = append(units, candidateUnits(u, header, paths[u.Start], strings.Join(outline, " | "))...)
+		units = append(units, candidateUnits(u, header, paths[u.Start])...)
 		if m, ok := mixedList(u); ok && u.Kind != "Paragraph" {
 			units = append(units, m)
 		}
