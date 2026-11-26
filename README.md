@@ -69,7 +69,7 @@ lintdec --budget 100 --severity warning --out jsonl --quiet . > findings.jsonl
 
 `--budget` caps inference requests, including retries and follow-ups, not dollars. An incomplete budget-limited run exits 2. Fatal auth or billing responses (HTTP 401/402/403) also stop remaining checks and exit 2; re-run after fixing credentials or balance to resume from cache. Each rule has a fixed level (`error`, `warning`, or `info`); `--severity warning` reports warnings and errors.
 
-Each rule also has a confidence floor, and documentation rules ask their exception as a separate question. Both were measured on Jev, so chat models run on floors alone; passing `--threshold` explicitly overrides per-rule floors while keeping vetoes active.
+Each rule also has a confidence floor, and System One runs ask a rule's exception as a separate isolated request only once the rule itself triggers (lowering `--threshold` below `0.50` may therefore trigger extra veto requests). Chat models run on floors alone; passing `--threshold` explicitly overrides per-rule floors while keeping vetoes active.
 
 Cost is provider-reported, a known subtotal, or `unknown`; OpenRouter may omit separate BYOK charges. Cached checks avoid model calls.
 

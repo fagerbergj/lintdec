@@ -63,7 +63,8 @@ func (c *client) cacheModel() string {
 
 func (c *client) cacheTemp() string {
 	if c.protocol == "systemone" {
-		return "systemone-1q"
+		// 1q + vetoes asked in their own isolated request; bump invalidates bundled verdicts.
+		return "systemone-1q-iso"
 	}
 	return fmt.Sprintf("%v", c.temp)
 }
@@ -82,19 +83,22 @@ func (c *client) floorFor(r Rule) float64 {
 	return ruleFloor(r.ID)
 }
 
-// vetoTrigger is the primary confidence that warrants a lazy veto call; capped at 0.50
+const lazyVetoCap = 0.5
+
+// vetoTrigger is the primary confidence that warrants a lazy veto call; capped at lazyVetoCap
 // so later --calibrate or --threshold >= 0.50 runs reuse cached entries with vetoes intact.
 func (c *client) vetoTrigger(r Rule) float64 {
-	return min(0.5, c.floorFor(r))
+	return min(lazyVetoCap, c.floorFor(r))
 }
 
 type Verdict struct {
-	Lint       bool     `json:"lint"`
-	Severity   string   `json:"severity"`
-	Confidence float64  `json:"confidence"`
-	Line       *int     `json:"line"`
-	Reason     string   `json:"reason"`
-	Veto       *float64 `json:"veto,omitempty"` // probability the rule's exception applies
+	Lint       bool    `json:"lint"`
+	Severity   string  `json:"severity"`
+	Confidence float64 `json:"confidence"`
+	Line       *int    `json:"line"`
+	Reason     string  `json:"reason"`
+	// nil when no veto exists, chat protocol, or primary score stayed below vetoTrigger.
+	Veto *float64 `json:"veto,omitempty"`
 }
 
 const systemPrompt = `You are a strict code linter. Each call gives you one TARGET and a numbered list of rules.

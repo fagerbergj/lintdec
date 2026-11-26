@@ -492,6 +492,7 @@ func TestExplicitThresholdOverridesRuleFloorWhileKeepingVeto(t *testing.T) {
 	if len(resDefault.findings) != 0 {
 		t.Fatalf("default floor should suppress 0.80 (< 0.85), got %d findings", len(resDefault.findings))
 	}
+	coldCalls := calls.Load() // 1 primary + 1 lazy veto on the cold run
 
 	// Explicit --threshold 0.75 lowers the floor to 0.75 while keeping vetoes active.
 	clExplicit := newLintClient(endpoint{BaseURL: srv.URL, Protocol: "systemone", Model: "clef"}, lintOpts{
@@ -500,8 +501,9 @@ func TestExplicitThresholdOverridesRuleFloorWhileKeepingVeto(t *testing.T) {
 	})
 	clExplicit.httpc = srv.Client()
 	resExplicit := runPool(context.Background(), jobs, lintOpts{workers: 1, quiet: true}, clExplicit, ch, newProgress(1, true), lines, nil)
-	if len(resExplicit.findings) != 1 || calls.Load() != 2 {
-		t.Fatalf("explicit --threshold 0.75 should report 0.80 from cache (1 rule + 1 lazy veto on cold run): findings=%d calls=%d", len(resExplicit.findings), calls.Load())
+	if len(resExplicit.findings) != 1 || calls.Load() != coldCalls {
+		t.Fatalf("explicit --threshold 0.75 must report 0.80 from cache: findings=%d extra calls=%d",
+			len(resExplicit.findings), calls.Load()-coldCalls)
 	}
 
 	// Out-of-range and NaN --threshold values are rejected.
@@ -617,7 +619,9 @@ func TestSystemOneLazyIsolatedVeto(t *testing.T) {
 		t.Fatalf("asked = %v, want %v (clean rule must skip veto)", asked, wantAsked)
 	}
 
-	// Lowering --threshold below 0.12 must fetch the missing veto for cached comment-history.
+	// Lowering --threshold below 0.12 must fetch ONLY the missing veto for cached comment-history,
+	// without re-asking comment-history's primary or touching cached comment-hedge.
+	asked = nil
 	clLow := newLintClient(endpoint{BaseURL: srv.URL, Protocol: "systemone", Model: "clef"}, lintOpts{
 		threshold: 0.10,
 		setFlags:  map[string]bool{"threshold": true},
@@ -627,7 +631,7 @@ func TestSystemOneLazyIsolatedVeto(t *testing.T) {
 	if len(resLow.findings) != 1 || resLow.findings[0].Rule != "comment-hedge" {
 		t.Fatalf("vetoed comment-history must stay suppressed at low threshold: %+v", resLow.findings)
 	}
-	if !slices.Contains(asked, "comment-history~veto") {
-		t.Fatalf("expected lazy veto fetch when threshold drops below cached score, asked=%v", asked)
+	if !slices.Equal(asked, []string{"comment-history~veto"}) {
+		t.Fatalf("low-threshold run should fetch only missing veto, asked=%v", asked)
 	}
 }

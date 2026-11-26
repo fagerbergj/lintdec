@@ -17,7 +17,7 @@ var ruleVetoes = map[string]string{
 	"comment-hedge":            "Does the comment state a known fact or documented limitation rather than leave doubt about whether the code is correct?",
 	"comment-history":          "Does the comment mainly state current behavior or a binding constraint, with any history only as a passing reference?",
 	"comment-long":             "Does every sentence in the comment state a non-obvious constraint, invariant, or design decision that the code cannot express, rather than pad a short note into an essay?",
-	"md-inanimate-actor":       "Is the subject of the marked verb a person, a role (a PM, the caller, the recipient, the on-call engineer), a team or organization, or an AI model, agent, or assistant (an LLM, Claude, the agent)?",
+	"md-inanimate-actor":       "Is the subject of the marked verb in TARGET a person, a role (a PM, the caller, the recipient, the on-call engineer), a team or organization, or an AI model, agent, or assistant (an LLM, Claude, the agent)?",
 	"md-wordy-phrase":          "Would replacing the marked phrase in TARGET with a single plain word change the meaning here (for example \"should be able to\", \"for the sole purpose of\", a negation, or a fixed user-story template), or is the marked phrase inside quoted text, a title, or code?",
 	"md-restates":              "Does the TARGET state at least one fact, step, condition, destination, or example that neither the HEADING nor the PREVIOUS BLOCK states, or is it a lead-in to the block on the NEXT LINE?",
 	"md-heading-promise":       "Does the section text say anything about the topic its heading names, even briefly, even to say it does not apply, has nothing to report, is deferred, or is covered by a link or a checked template box?",
