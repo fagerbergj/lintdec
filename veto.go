@@ -1,7 +1,7 @@
 package main
 
-// Jev ignores exceptions folded into a rubric ("X, unless Y"), so each rule's exception is asked as its own
-// question in the same call. Only the System One path asks them; chat models are gated by floors alone.
+// Jev ignores exceptions folded into a rubric ("X, unless Y"), so each rule's exception is asked
+// as its own isolated question when the primary rule triggers. Only the System One path asks them.
 const vetoConfidence = 0.5
 
 var ruleVetoes = map[string]string{
@@ -77,29 +77,13 @@ func ruleFloor(id string) float64 {
 
 func vetoID(id string) string { return id + "~veto" }
 
-// withVetoes: the job's rules plus each one's exception question.
-func withVetoes(rules []Rule) []Rule {
-	out := rules
-	for _, r := range rules {
-		if q, ok := ruleVetoes[r.ID]; ok {
-			out = append(out[:len(out):len(out)], Rule{ID: vetoID(r.ID), Kinds: r.Kinds, Scope: "question", Rubric: q})
-		}
+// vetoRule returns the exception question rule for r, if one is configured.
+func vetoRule(r Rule) (Rule, bool) {
+	q, ok := ruleVetoes[r.ID]
+	if !ok {
+		return Rule{}, false
 	}
-	return out
-}
-
-// attachVetoes keeps only the job's rules, recording each exception's probability on its verdict.
-func attachVetoes(rules []Rule, v map[string]Verdict) map[string]Verdict {
-	out := make(map[string]Verdict, len(rules))
-	for _, r := range rules {
-		vv := v[r.ID]
-		if veto, ok := v[vetoID(r.ID)]; ok {
-			p := veto.Confidence
-			vv.Veto = &p
-		}
-		out[r.ID] = vv
-	}
-	return out
+	return Rule{ID: vetoID(r.ID), Kinds: r.Kinds, Scope: "question", Rubric: q}, true
 }
 
 // reportable applies the effective confidence floor and exception after the cache,

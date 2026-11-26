@@ -494,6 +494,10 @@ func runPool(ctx context.Context, jobs []job, o lintOpts, cl *client, ch *cache,
 		for _, r := range j.rules {
 			if v, ok := ch.get(ch.key(cl.cacheModel(), tempStr, r.ID, cl.cacheRuleVersion(r.ID), j.unit)); ok {
 				if cl.protocol == "systemone" {
+					if _, hasVeto := vetoRule(r); hasVeto && v.Veto == nil && v.Confidence >= cl.vetoTrigger(r) {
+						todo = append(todo, r)
+						continue
+					}
 					v = applySystemOneThreshold(v, cl.threshold)
 				}
 				verdicts[r.ID] = v

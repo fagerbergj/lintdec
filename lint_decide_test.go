@@ -500,8 +500,8 @@ func TestExplicitThresholdOverridesRuleFloorWhileKeepingVeto(t *testing.T) {
 	})
 	clExplicit.httpc = srv.Client()
 	resExplicit := runPool(context.Background(), jobs, lintOpts{workers: 1, quiet: true}, clExplicit, ch, newProgress(1, true), lines, nil)
-	if len(resExplicit.findings) != 1 || calls.Load() != 1 {
-		t.Fatalf("explicit --threshold 0.75 should report 0.80 from cache: findings=%d calls=%d", len(resExplicit.findings), calls.Load())
+	if len(resExplicit.findings) != 1 || calls.Load() != 2 {
+		t.Fatalf("explicit --threshold 0.75 should report 0.80 from cache (1 rule + 1 lazy veto on cold run): findings=%d calls=%d", len(resExplicit.findings), calls.Load())
 	}
 
 	// Out-of-range and NaN --threshold values are rejected.
@@ -566,5 +566,68 @@ func TestRunPoolFailsFastOnFatalHTTPWithoutDeadlock(t *testing.T) {
 	code := emitReport(res, "info", "json", len(jobs), newProgress(len(jobs), true), false)
 	if code != 2 {
 		t.Errorf("emitReport exit = %d, want 2 on fatal HTTP", code)
+	}
+}
+
+func TestSystemOneLazyIsolatedVeto(t *testing.T) {
+	var asked []string
+	var mu sync.Mutex
+	scores := map[string]float64{
+		"comment-history":      0.12,
+		"comment-history~veto": 0.80,
+		"comment-hedge":        0.82,
+		"comment-hedge~veto":   0.20,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Questions map[string]map[string]any `json:"questions"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode: %v", err)
+		}
+		if len(body.Questions) != 1 {
+			t.Errorf("want 1 isolated question per call, got %d: %+v", len(body.Questions), body.Questions)
+		}
+		answers := map[string]any{}
+		mu.Lock()
+		for id := range body.Questions {
+			asked = append(asked, id)
+			answers[id] = map[string]any{"type": "noul", "noul": scores[id]}
+		}
+		mu.Unlock()
+		json.NewEncoder(w).Encode(map[string]any{"model": "clef", "answers": answers})
+	}))
+	defer srv.Close()
+
+	hist, _ := findRule("comment-history")
+	hedge, _ := findRule("comment-hedge")
+	u := Unit{Kind: "Comment", File: "a.go", Start: 1, End: 1, Text: "// note"}
+	jobs := []job{{unit: u, rules: []Rule{hist, hedge}}}
+	ch := &cache{dir: t.TempDir(), on: true}
+	lines := map[string][]string{"a.go": {u.Text}}
+
+	cl := newLintClient(endpoint{BaseURL: srv.URL, Protocol: "systemone", Model: "clef"}, lintOpts{threshold: 0.5})
+	cl.httpc = srv.Client()
+	res := runPool(context.Background(), jobs, lintOpts{workers: 1, quiet: true}, cl, ch, newProgress(1, true), lines, nil)
+	if len(res.findings) != 1 || res.findings[0].Rule != "comment-hedge" {
+		t.Fatalf("want 1 comment-hedge finding, got %+v", res.findings)
+	}
+	wantAsked := []string{"comment-history", "comment-hedge", "comment-hedge~veto"}
+	if !slices.Equal(asked, wantAsked) {
+		t.Fatalf("asked = %v, want %v (clean rule must skip veto)", asked, wantAsked)
+	}
+
+	// Lowering --threshold below 0.12 must fetch the missing veto for cached comment-history.
+	clLow := newLintClient(endpoint{BaseURL: srv.URL, Protocol: "systemone", Model: "clef"}, lintOpts{
+		threshold: 0.10,
+		setFlags:  map[string]bool{"threshold": true},
+	})
+	clLow.httpc = srv.Client()
+	resLow := runPool(context.Background(), jobs, lintOpts{workers: 1, quiet: true}, clLow, ch, newProgress(1, true), lines, nil)
+	if len(resLow.findings) != 1 || resLow.findings[0].Rule != "comment-hedge" {
+		t.Fatalf("vetoed comment-history must stay suppressed at low threshold: %+v", resLow.findings)
+	}
+	if !slices.Contains(asked, "comment-history~veto") {
+		t.Fatalf("expected lazy veto fetch when threshold drops below cached score, asked=%v", asked)
 	}
 }

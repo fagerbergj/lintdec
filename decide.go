@@ -82,6 +82,12 @@ func (c *client) floorFor(r Rule) float64 {
 	return ruleFloor(r.ID)
 }
 
+// vetoTrigger is the primary confidence that warrants a lazy veto call; capped at 0.50
+// so later --calibrate or --threshold >= 0.50 runs reuse cached entries with vetoes intact.
+func (c *client) vetoTrigger(r Rule) float64 {
+	return min(0.5, c.floorFor(r))
+}
+
 type Verdict struct {
 	Lint       bool     `json:"lint"`
 	Severity   string   `json:"severity"`
@@ -166,8 +172,8 @@ func (c *client) call(ctx context.Context, j job) (map[string]Verdict, error) {
 	return out, nil
 }
 
-// callSystemOne sends one rule (+ its veto) per request against the shared state
-// so sibling rubrics cannot suppress each other and cache entries stay independent.
+// callSystemOne sends one rule per request against the shared state so sibling
+// rubrics cannot suppress each other and cache entries stay independent.
 func (c *client) callSystemOne(ctx context.Context, j job) (map[string]Verdict, error) {
 	var state strings.Builder
 	fmt.Fprintf(&state, "FILE: %s\nUNIT: %s, lines %d-%d\n", j.unit.File, j.unit.Kind, j.unit.Start, j.unit.End)
@@ -188,8 +194,26 @@ func (c *client) callSystemOne(ctx context.Context, j job) (map[string]Verdict, 
 	return out, nil
 }
 
+// callSystemOneRule asks only r first, then asks its veto in an isolated call only
+// when r reaches vetoTrigger, avoiding cross-question suppression and skipping ~98% of vetoes.
 func (c *client) callSystemOneRule(ctx context.Context, state string, r Rule) (Verdict, error) {
-	qs := withVetoes([]Rule{r})
+	v, err := c.callSystemOneOnce(ctx, state, r)
+	if err != nil {
+		return Verdict{}, err
+	}
+	if vr, ok := vetoRule(r); ok && v.Confidence >= c.vetoTrigger(r) {
+		vv, err := c.callSystemOneOnce(ctx, state, vr)
+		if err != nil {
+			return Verdict{}, err
+		}
+		p := vv.Confidence
+		v.Veto = &p
+	}
+	return v, nil
+}
+
+func (c *client) callSystemOneOnce(ctx context.Context, state string, r Rule) (Verdict, error) {
+	qs := []Rule{r}
 	payload, _ := json.Marshal(map[string]any{
 		"model":     c.model,
 		"state":     state,
@@ -242,7 +266,7 @@ func (c *client) callSystemOneRule(ctx context.Context, state string, r Rule) (V
 	if err != nil {
 		return Verdict{}, err
 	}
-	return attachVetoes([]Rule{r}, v)[r.ID], nil
+	return v[r.ID], nil
 }
 
 // applySystemOneThreshold derives Lint and Severity from a cached or fresh noul
