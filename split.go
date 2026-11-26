@@ -567,8 +567,9 @@ func digestFor(u Unit, lines []string) string {
 var (
 	commentMarker        = regexp.MustCompile(`^\s*(//+|#+|/\*+|\*+/?|--|;+|<!--|\{\s*/\*+)\s?`)
 	ruleLine             = regexp.MustCompile(`^[^\p{L}\p{N}]{3,}$`)
-	toolDirective        = regexp.MustCompile(`(?i)^(?:shellcheck|eslint|prettier-ignore|@ts-|nolint|noqa|ruff:\s*noqa|flake8:\s*noqa|pragma\s+warning\s+disable|markdownlint-disable|rubocop|go:|lint:|lintdec:ignore|pylint|type:\s*ignore|istanbul|c8 |biome-ignore|ktlint|tslint|jshint|NOSONAR|region|endregion)`)
-	suppressionDirective = regexp.MustCompile(`(?i)^(?:eslint-disable|@ts-ignore|@ts-expect-error|nolint|noqa|ruff:\s*noqa|flake8:\s*noqa|pragma\s+warning\s+disable|markdownlint-disable|type:\s*ignore|biome-ignore|pylint:\s*disable|rubocop:disable|ktlint-disable|NOSONAR|istanbul ignore|c8 ignore|shellcheck disable)`)
+	toolDirective        = regexp.MustCompile(`^(?:shellcheck|eslint|prettier-ignore|@ts-|nolint|noqa|go:\S|lint:\S|lintdec:ignore|pylint|type:\s*ignore|istanbul|c8 |biome-ignore|ktlint|tslint|jshint|NOSONAR|region|endregion)`)
+	toolDirectiveCI      = regexp.MustCompile(`(?i)^(?:ruff:\s*noqa|flake8:\s*noqa|pragma\s+warning\s+disable|markdownlint-disable|rubocop:disable)`)
+	suppressionDirective = regexp.MustCompile(`^(?:eslint-disable|@ts-ignore|@ts-expect-error|nolint|noqa|type:\s*ignore|biome-ignore|pylint:\s*disable|ktlint-disable|NOSONAR|istanbul ignore|c8 ignore|shellcheck disable)`)
 )
 
 func isSuppressionComment(u Unit) bool {
@@ -577,7 +578,7 @@ func isSuppressionComment(u Unit) bool {
 	}
 	for line := range strings.SplitSeq(u.Text, "\n") {
 		t := strings.TrimSpace(commentMarker.ReplaceAllString(line, ""))
-		if suppressionDirective.MatchString(t) {
+		if suppressionDirective.MatchString(t) || toolDirectiveCI.MatchString(t) {
 			return true
 		}
 	}
@@ -613,7 +614,7 @@ func structuralComment(u Unit) bool {
 		switch {
 		case t == "" || ruleLine.MatchString(t):
 			rules++
-		case toolDirective.MatchString(t):
+		case toolDirective.MatchString(t) || toolDirectiveCI.MatchString(t):
 			directives++
 		case len(strings.Fields(t)) <= 5:
 			titles++

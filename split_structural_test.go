@@ -39,19 +39,26 @@ func TestFilterCommentsReKindsSuppressions(t *testing.T) {
 		{Kind: "Comment", Text: "{/* eslint-disable-next-line react/no-danger */}"},
 		{Kind: "Comment", Text: "# rubocop:disable Metrics/AbcSize"},
 		{Kind: "Comment", Text: "// parseHand builds one hand from the deal. The linter flags the shadow,\n// but the second return is deliberate.\n//nolint:govet"},
+		{Kind: "Comment", Text: "// Go: the GC handles cycles now"},
+		{Kind: "Comment", Text: "// Lint: run make lint before pushing"},
+		{Kind: "Comment", Text: "// Region: north american desks"},
+		{Kind: "Comment", Text: "// Pylint settings live in pyproject"},
+		{Kind: "Comment", Text: "// Type: Ignore case when matching names"},
 		{Kind: "Comment", Text: "// Normal explanation comment."},
 	}
 	got := filterComments(in)
-	if len(got) != 10 {
-		t.Fatalf("want 10 surviving units (8 Directive + 2 Comment), got %d: %+v", len(got), got)
+	if len(got) != 15 {
+		t.Fatalf("want 15 surviving units (8 Directive + 7 Comment), got %d: %+v", len(got), got)
 	}
 	for i := range 8 {
 		if got[i].Kind != "Directive" {
 			t.Fatalf("got[%d] = %s (%q), want Directive", i, got[i].Kind, got[i].Text)
 		}
 	}
-	if got[8].Kind != "Comment" || got[9].Kind != "Comment" {
-		t.Fatalf("mixed prose+nolint and normal comments must stay Comment: %+v", got[8:])
+	for i := 8; i < len(got); i++ {
+		if got[i].Kind != "Comment" {
+			t.Fatalf("prose comment got[%d] = %s (%q), want Comment", i, got[i].Kind, got[i].Text)
+		}
 	}
 }
 

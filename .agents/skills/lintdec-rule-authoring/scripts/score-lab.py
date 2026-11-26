@@ -70,6 +70,9 @@ def is_reportable(finding: dict, floors: dict[str, float], cuts: dict[str, float
     return finding["confidence"] >= floor and (veto is None or veto < cut)
 
 
+REQUIRED_FINDING_FIELDS = ("rule", "file", "line", "confidence")
+
+
 def load_findings(path: str) -> list[dict]:
     rows = []
     try:
@@ -82,8 +85,9 @@ def load_findings(path: str) -> list[dict]:
                     obj = json.loads(line)
                 except json.JSONDecodeError as err:
                     raise ValueError(f"{path}:{idx}: invalid JSON: {err}") from err
-                if not isinstance(obj, dict) or "rule" not in obj:
-                    raise ValueError(f"{path}:{idx}: expected JSONL finding object (use --out jsonl, not --out json)")
+                if not isinstance(obj, dict) or any(k not in obj for k in REQUIRED_FINDING_FIELDS):
+                    req = ", ".join(REQUIRED_FINDING_FIELDS)
+                    raise ValueError(f"{path}:{idx}: finding needs {req} (use --out jsonl, not a filtered capture or --out json)")
                 rows.append(obj)
     except OSError as err:
         raise ValueError(str(err)) from err
@@ -100,11 +104,17 @@ def load_manifest(path: str) -> object:
         raise ValueError(f"{path}: invalid JSON: {err}") from err
 
 
+def matches_file(finding_file: str, suffix: str) -> bool:
+    norm = finding_file.replace("\\", "/")
+    want = suffix.replace("\\", "/").lstrip("/")
+    return norm == want or norm.endswith("/" + want)
+
+
 def match_target(findings: list[dict], rule: str, file_suffix: str, line: int) -> list[dict]:
     return [
         r for r in findings
         if r["rule"] == rule
-        and r["file"].endswith(file_suffix)
+        and matches_file(r["file"], file_suffix)
         and r["line"] <= line <= r.get("end_line", r["line"])
     ]
 
@@ -132,7 +142,7 @@ def score_rule(
         subsumed = [
             r["rule"] for r in findings
             if r["rule"] != rule
-            and r["file"].endswith(item["file"])
+            and matches_file(r["file"], item["file"])
             and r["line"] <= item["line"] <= r.get("end_line", r["line"])
             and is_reportable(r, floors, cuts, default_cut)
         ]

@@ -20,7 +20,7 @@ Before dogfooding a new rule on live repos, prove it works on a small, blind cor
     }
   }
   ```
-  `file` matches the finding path as a suffix; `line` matches any line inside the finding's `[line, end_line]` span. Every rule entry requires a non-empty `loud` array (empty manifests exit `2`).
+  `file` matches the finding path as a path-boundary suffix (`exact` or `/<file>`); `line` matches any line inside the finding's `[line, end_line]` span. Every rule entry requires a non-empty `loud` array (empty manifests exit `2`).
 
 ### Subsumption Check
 Always run the lab with the new rule **plus every existing default-on rule that shares its `Unit.Kind`**. If an existing default-on rule already catches 100% of the new rule's loud plants cleanly (as `tautology-test` did for `assert-self` and `test-except-pass`), do not add the redundant rule.
