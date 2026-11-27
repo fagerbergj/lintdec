@@ -47,7 +47,7 @@ Given a repository's detected stacks, doctor audit findings, package.json depend
 Rules:
 1. Emit ONLY standalone linter/typechecker configs (.golangci.yml, eslint.config.mjs, .oxlintrc.json, biome.json, ruff.toml, mypy.ini, pyrightconfig.json, .shellcheckrc) and GitHub Actions workflows (.github/workflows/*.yml). NEVER emit shared project manifests (pyproject.toml, tsconfig.json, package.json, lintdec.yaml) or application source code.
 2. For TS/JS: if eslint is NOT listed in package.json dependencies/devDependencies, emit .oxlintrc.json (zero-dependency Oxlint) instead of eslint.config.* with uninstalled imports. When editing an existing ESLint flat config, place reportUnusedDisableDirectives: "error" inside linterOptions (NEVER inside rules), and never reference plugins not installed in package.json.
-3. For Go: emit v2 .golangci.yml (version: "2", run.timeout: 5m, relative-path-mode: gomod, linters.default: standard plus bodyclose/copyloopvar/errorlint/gocritic/gosec/makezero/modernize/nilerr/nilnesserr/nilnil/noctx/nolintlint, govet enable-all minus fieldalignment, exclusions generated: strict / warn-unused: true / presets: [], issues max-issues-per-linter: 0 / max-same-issues: 0 / uniq-by-line: false) and run golangci/golangci-lint-action@v9 with --new-from-merge-base=origin/${{ github.base_ref }}.
+3. For Go: emit v2 .golangci.yml (version: "2", run.timeout: 5m, relative-path-mode: gomod, linters.default: standard plus bodyclose/copyloopvar/errorlint/gocritic/gosec/makezero/modernize/nilerr/nilnesserr/nilnil/noctx/nolintlint, govet enable-all minus fieldalignment, exclusions generated: strict / warn-unused: true / presets: [], issues max-issues-per-linter: 0 / max-same-issues: 0 / uniq-by-line: false) and run golangci/golangci-lint-action@v9 with --new-from-merge-base=origin/${{ github.base_ref }} gated on if: github.event_name == 'pull_request' (or bare --new-from-merge-base).
 4. For Python and Shell: put Ruff in ruff.toml (extend-select = ["E", "F", "I", "B", "UP", "SIM", "FURB", "RUF"], ignore = ["E501"]), Mypy in mypy.ini (strict = True, warn_unused_configs = True, warn_redundant_casts = True, warn_unused_ignores = True, strict_equality = True), and ShellCheck in .shellcheckrc (external-sources=true, source-path=SCRIPTDIR; never blanket-disable SC2086).
 5. For CI workflows: prefer adding a dedicated .github/workflows/lint.yml over modifying existing release/deploy workflows; NEVER downgrade an existing passing whole-tree lint command to diff-only (tighten with --max-warnings 0); compute changed files inline with bash mapfile -t files < <(git diff --name-only --diff-filter=ACMR ...) instead of steps.*.outputs.* indirection; prefer official actions over curl/wget | sh; never use pull_request_target, permissions: write-all, || true, or continue-on-error: true; and read language versions from manifests (e.g. go-version-file: go.mod).
 6. Do not rewrite any existing file that was marked omitted or truncated in the prompt.`
@@ -66,8 +66,9 @@ var (
 	unsafeWorkflowTargetRe     = regexp.MustCompile(`(?i)\bpull_request_target\b`)
 	unsafeWorkflowPermRe       = regexp.MustCompile(`(?i)\bpermissions\s*:\s*write-all\b`)
 	unsafeWorkflowPipeRe       = regexp.MustCompile(`(?i)\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+)?(?:ba|da|z)?sh\b`)
-	workflowStepOutputRefRe    = regexp.MustCompile(`\bsteps\.[a-zA-Z0-9_-]+\.outputs\.[a-zA-Z0-9_-]+`)
-	eslintMisplacedLinterOptRe = regexp.MustCompile(`(?s)\brules\s*:\s*\{[^}]*['"]?reportUnusedDisableDirectives['"]?\s*:`)
+	workflowStepIDRe           = regexp.MustCompile(`(?m)^\s*(?:-\s*)?id:\s*["']?([A-Za-z0-9_-]+)`)
+	workflowStepOutputRefRe    = regexp.MustCompile(`\bsteps\.([a-zA-Z0-9_-]+)\.outputs\.[a-zA-Z0-9_-]+`)
+	eslintMisplacedLinterOptRe = regexp.MustCompile(`\brules\s*:\s*\{(?:[^{}]|\{[^{}]*\})*['"]?reportUnusedDisableDirectives['"]?\s*:`)
 )
 
 func cleanSafeRelPath(rel string) (string, bool) {
@@ -197,25 +198,33 @@ func appendPackageJSONSummary(sb *strings.Builder, root string) {
 		Scripts         map[string]string `json:"scripts"`
 		Dependencies    map[string]string `json:"dependencies"`
 		DevDependencies map[string]string `json:"devDependencies"`
+		Workspaces      any               `json:"workspaces"`
 	}
 	if err := json.Unmarshal(b, &pkg); err != nil {
 		return
 	}
-	var deps []string
-	for k := range pkg.Dependencies {
-		deps = append(deps, k)
+	var summary strings.Builder
+	fmt.Fprintf(&summary, "\nROOT PACKAGE.JSON SUMMARY (do not modify package.json):\nscripts: %s\ndependencies: %s\ndevDependencies: %s\n",
+		sortedMapKeys(pkg.Scripts), sortedMapKeys(pkg.Dependencies), sortedMapKeys(pkg.DevDependencies))
+	if pkg.Workspaces != nil {
+		if ws, err := json.Marshal(pkg.Workspaces); err == nil {
+			fmt.Fprintf(&summary, "workspaces: %s (check workspace packages before assuming eslint is absent)\n", string(ws))
+		}
 	}
-	for k := range pkg.DevDependencies {
-		deps = append(deps, k)
+	s := summary.String()
+	if len(s) > 2048 {
+		s = s[:2048] + "... (truncated)\n"
 	}
-	slices.Sort(deps)
-	var scripts []string
-	for k := range pkg.Scripts {
-		scripts = append(scripts, k)
+	sb.WriteString(s)
+}
+
+func sortedMapKeys(m map[string]string) string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
 	}
-	slices.Sort(scripts)
-	fmt.Fprintf(sb, "\nROOT PACKAGE.JSON SUMMARY (do not modify package.json):\nscripts: %s\ndependencies: %s\n",
-		strings.Join(scripts, ", "), strings.Join(deps, ", "))
+	slices.Sort(keys)
+	return strings.Join(keys, ", ")
 }
 
 func collectExistingConfigPaths(rep DoctorReport) []string {
@@ -417,13 +426,15 @@ func validateGolangciConfig(root, base string, content []byte) (string, error) {
 	if err == nil || !strings.Contains(err.Error(), "used to build golangci-lint is lower") {
 		return status, err
 	}
-	// Host golangci-lint is older than go.mod; validate schema against a neutral synthetic go.mod.
+	// Host golangci-lint is older than go.mod; validate v2 JSON Schema against a low Go floor.
 	tmpDir, mkErr := os.MkdirTemp("", "lintdec-golangci-schema-*")
 	if mkErr != nil {
-		return "skipped (golangci-lint Go version mismatch)", nil
+		return "", mkErr
 	}
 	defer os.RemoveAll(tmpDir)
-	_ = os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte("module lintdecverify\n\ngo 1.24\n"), 0o600)
+	if wErr := os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte("module lintdecverify\n\ngo 1.21\n"), 0o600); wErr != nil {
+		return "", wErr
+	}
 	return validateWithTempFile(tmpDir, base, content, "golangci-lint", func(tmp string) []string {
 		return []string{"config", "verify", "--config", tmp}
 	})
@@ -445,10 +456,38 @@ func validateWorkflowContent(content []byte) (string, error) {
 	if !strings.Contains(text, "jobs:") {
 		return "", errors.New("workflow missing jobs: section")
 	}
-	if workflowStepOutputRefRe.MatchString(text) && !strings.Contains(text, "GITHUB_OUTPUT") {
+	if hasUnwrittenStepOutput(text) {
 		return "", errors.New("workflow references steps.<id>.outputs without writing to $GITHUB_OUTPUT")
 	}
 	return "workflow guard ok", nil
+}
+
+// hasUnwrittenStepOutput flags run-step output references when GITHUB_OUTPUT is never written,
+// while exempting uses: action steps whose action.yml writes outputs internally.
+func hasUnwrittenStepOutput(text string) bool {
+	if strings.Contains(text, "GITHUB_OUTPUT") {
+		return false
+	}
+	actionIDs := actionStepIDs(text)
+	for _, m := range workflowStepOutputRefRe.FindAllStringSubmatch(text, -1) {
+		if !actionIDs[m[1]] {
+			return true
+		}
+	}
+	return false
+}
+
+func actionStepIDs(text string) map[string]bool {
+	ids := map[string]bool{}
+	for _, step := range splitWorkflowSteps(text) {
+		if !strings.Contains(step, "uses:") {
+			continue
+		}
+		if m := workflowStepIDRe.FindStringSubmatch(step); m != nil {
+			ids[m[1]] = true
+		}
+	}
+	return ids
 }
 
 func validateWithTempFile(root, base string, content []byte, bin string, argsFn func(string) []string) (string, error) {

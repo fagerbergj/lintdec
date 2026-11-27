@@ -101,10 +101,10 @@ func defaultInclude() []string {
 }
 
 func walkRoot(root string, fn func(string)) {
-	walkRootOpts(root, false, fn)
+	walkRootAllowingWorktreeRoot(root, false, fn)
 }
 
-func walkRootOpts(root string, allowRootWorktree bool, fn func(string)) {
+func walkRootAllowingWorktreeRoot(root string, allowRootWorktree bool, fn func(string)) {
 	ignored := gitIgnored(root)
 	filepath.WalkDir(root, func(p string, d iofs.DirEntry, err error) error {
 		if err != nil {

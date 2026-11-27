@@ -707,30 +707,59 @@ func TestDoctorDogfoodFixes(t *testing.T) {
 	if !isPythonTypeConfigWeak("[mypy]\nignore_errors = True\n") {
 		t.Fatal("global [mypy] ignore_errors = True must be flagged")
 	}
+	if !isPythonTypeConfigWeak("[mypy-*]\nignore_errors = True\n") {
+		t.Fatal("catch-all [mypy-*] ignore_errors must still be flagged")
+	}
+	if !isPythonTypeConfigWeak("[tool.mypy]\nstrict = true\n[[tool.mypy.overrides]]\nmodule = \".*\"\nignore_errors = true\n") {
+		t.Fatal("catch-all [[tool.mypy.overrides]] module='.*' must still be flagged")
+	}
 
-	// 3. Misplaced reportUnusedDisableDirectives inside ESLint rules: is rejected pre-write.
-	badESLint := []byte(`export default [{ rules: { "reportUnusedDisableDirectives": "error" } }];`)
+	// 3. Misplaced reportUnusedDisableDirectives inside ESLint rules: (even after nested options) is rejected,
+	//    while valid linterOptions placement passes.
+	badESLint := []byte(`export default [{ rules: { "no-unused-vars": ["error", { args: "none" }], "reportUnusedDisableDirectives": "error" } }];`)
 	if _, err := defaultValidateDoctorContent(wtDir, "eslint.config.mjs", badESLint); err == nil || !strings.Contains(err.Error(), "linterOptions") {
 		t.Fatalf("expected misplaced reportUnusedDisableDirectives error, got %v", err)
 	}
+	goodESLint := []byte(`export default [{ linterOptions: { reportUnusedDisableDirectives: "error" }, rules: { "no-unused-vars": "error" } }];`)
+	if _, err := defaultValidateDoctorContent(wtDir, "eslint.config.mjs", goodESLint); err != nil {
+		t.Fatalf("expected valid linterOptions placement to pass, got %v", err)
+	}
 
-	// 4. Workflow referencing steps.<id>.outputs without writing to $GITHUB_OUTPUT is rejected.
+	// 4. Workflow referencing run-step outputs without $GITHUB_OUTPUT is rejected, while uses: action outputs pass.
 	badWF := []byte("on: [pull_request]\njobs:\n  lint:\n    steps:\n      - id: diff\n        run: echo hi\n      - if: steps.diff.outputs.files != ''\n        run: ruff check .\n")
 	if _, err := validateWorkflowContent(badWF); err == nil || !strings.Contains(err.Error(), "GITHUB_OUTPUT") {
 		t.Fatalf("expected missing GITHUB_OUTPUT workflow guard error, got %v", err)
+	}
+	actionWF := []byte("on: [pull_request]\njobs:\n  lint:\n    steps:\n      - id: go\n        uses: actions/setup-go@v7\n      - if: steps.go.outputs.cache-hit != 'true'\n        run: go vet ./...\n")
+	if _, err := validateWorkflowContent(actionWF); err != nil {
+		t.Fatalf("expected uses: action step output reference to pass, got %v", err)
 	}
 	goodWF := []byte("on: [pull_request]\njobs:\n  lint:\n    steps:\n      - id: diff\n        run: echo 'files=a.py' >> \"$GITHUB_OUTPUT\"\n      - if: steps.diff.outputs.files != ''\n        run: ruff check .\n")
 	if _, err := validateWorkflowContent(goodWF); err != nil {
 		t.Fatalf("expected valid GITHUB_OUTPUT workflow to pass, got %v", err)
 	}
 
-	// 5. buildDoctorFixPrompt includes root package.json scripts/dependencies summary.
+	// 5. buildDoctorFixPrompt separates dependencies/devDependencies and includes workspaces.
 	pkgDir := t.TempDir()
 	writeTestFiles(t, pkgDir, map[string]string{
-		"package.json": `{"name":"demo","scripts":{"test":"vitest"},"devDependencies":{"typescript":"^5"}}`,
+		"package.json": `{"name":"demo","workspaces":["packages/*"],"scripts":{"test":"vitest"},"dependencies":{"ws":"^8"},"devDependencies":{"typescript":"^5"}}`,
 	})
 	prompt := buildDoctorFixPrompt(pkgDir, DoctorReport{Stacks: []string{"ts"}})
-	if !strings.Contains(prompt, "ROOT PACKAGE.JSON SUMMARY") || !strings.Contains(prompt, "typescript") {
-		t.Fatalf("expected package.json summary in prompt, got:\n%s", prompt)
+	if !strings.Contains(prompt, "devDependencies: typescript") || !strings.Contains(prompt, "workspaces:") {
+		t.Fatalf("expected devDependencies and workspaces in prompt, got:\n%s", prompt)
+	}
+
+	// 6. validateGolangciConfig retries in a neutral synthetic go.mod dir on host Go version mismatch.
+	stubBin := t.TempDir()
+	stubScript := filepath.Join(stubBin, "golangci-lint")
+	scriptBody := "#!/bin/sh\nif grep -q 'go 1.27' go.mod 2>/dev/null; then\n  echo 'the Go language version (go1.26) used to build golangci-lint is lower than the targeted Go version (1.27.3)' >&2\n  exit 1\nfi\nexit 0\n"
+	if err := os.WriteFile(stubScript, []byte(scriptBody), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", stubBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	goRepo := t.TempDir()
+	writeTestFiles(t, goRepo, map[string]string{"go.mod": "module demo\n\ngo 1.27.3\n"})
+	if status, err := validateGolangciConfig(goRepo, ".golangci.yml", []byte("version: \"2\"\n")); err != nil || status != "golangci-lint ok" {
+		t.Fatalf("expected mismatch fallback to succeed, got status=%q err=%v", status, err)
 	}
 }
