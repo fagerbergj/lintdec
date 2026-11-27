@@ -16,7 +16,7 @@ var (
 	adrHeadingRe       = regexp.MustCompile(`(?im)^#{1,3}\s+(?:status|context|decision|consequences|trade-?offs?)\b`)
 	rfcPathTitleRe     = regexp.MustCompile(`(?i)\b(?:rfcs?|rfds?|proposals?|design)\b`)
 	rfcHeadingRe       = regexp.MustCompile(`(?im)^#{1,3}\s+(?:proposal|motivation|proposed change|detailed design|design)\b`)
-	testSkipRe         = regexp.MustCompile(`(?i)(?:^|[^-\w])(?:t\.Skip\w*|test\.skip|it\.skip|describe\.skip|xit|xtest|@Disabled|@Ignore|@pytest\.mark\.skip(?:if)?|pytest\.skip|unittest\.skip)(?:[^-\w]|$)`)
+	testSkipRe         = regexp.MustCompile(`(?i)(?:^|[^-\w])(?:t\.Skip\w*|test\.skip|it\.skip|describe\.skip|xit|xtest|@Disabled|@Ignore|@pytest\.mark\.skip(?:if)?|pytest\.skip|unittest\.skip(?:If|Unless)?)(?:[^-\w]|$)`)
 	testMockRe         = regexp.MustCompile(`(?i)\b(?:vi\.fn|vi\.mock|vi\.spyOn|jest\.fn|jest\.mock|jest\.spyOn|MagicMock|create_autospec|sinon\.|gomock|mockk|Mockito|unittest\.mock)\b|\bpatch\s*\(`)
 	testSharedStateRe  = regexp.MustCompile(`(?i)(?:os\.(?:Set|Unset)env|process\.env\.\w+\s*=\s*[^=\s]|process\.env\[[^\]]+\]\s*=\s*[^=\s]|delete\s+process\.env|os\.environ\[[^\]]+\]\s*\+?=[^=]|del\s+os\.environ|os\.Chdir|process\.chdir|(?:/tmp/|localhost:\d|127\.0\.0\.1:\d)|(?:os\.)?writeFile(?:Sync)?\s*\(\s*["'` + "`" + `])`)
 	remediationHeadRe  = regexp.MustCompile(`(?i)^#{1,6}\s+.*(?:troubleshoot|error|warning|failure|debug|known issues|faq|caveat)`)

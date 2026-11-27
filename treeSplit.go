@@ -432,7 +432,7 @@ func attachTestHooks(units []Unit, hooks []testHook) {
 		if len(refs) == 0 {
 			continue
 		}
-		block := strings.Join(refs, "\n\n")
+		block := "LIFECYCLE HOOKS IN THIS FILE:\n" + strings.Join(refs, "\n\n")
 		if units[i].Context != "" {
 			units[i].Context = units[i].Context + "\n\n" + block
 		} else {
@@ -580,7 +580,14 @@ func isTestCall(callee string, cfg tsCfg) bool {
 }
 
 func isHookCall(callee string, cfg tsCfg) bool {
-	return len(cfg.callHooks) > 0 && cfg.callHooks[callee]
+	if len(cfg.callHooks) == 0 {
+		return false
+	}
+	if cfg.callHooks[callee] {
+		return true
+	}
+	base, prop, ok := strings.Cut(callee, ".")
+	return ok && (base == "test" || base == "describe") && cfg.callHooks[prop]
 }
 
 func kindForNode(n *sitter.Node, cfg tsCfg, src []byte) string {

@@ -55,6 +55,7 @@ func TestRuleEligibleDeterministicFilters(t *testing.T) {
 		{"test-ignored-no-reason", Unit{Kind: "TestFunction", Text: "@Disabled\nfun check() {}"}, true},
 		{"test-ignored-no-reason", Unit{Kind: "TestFunction", Text: "@pytest.mark.skipif(True, reason='x')\ndef test_a(): pass"}, true},
 		{"test-ignored-no-reason", Unit{Kind: "TestFunction", Text: "def test_a():\n    pytest.skip('later')"}, true},
+		{"test-ignored-no-reason", Unit{Kind: "TestFunction", Text: "@unittest.skipIf(True, 'x')\ndef test_a(self): pass"}, true},
 		{"test-ignored-no-reason", Unit{Kind: "TestFunction", Text: "func TestExit(t *testing.T) { exit(0) }"}, false},
 
 		{"test-over-mocked", Unit{Kind: "TestFunction", Text: "it('x', () => { const f = vi.fn(); })"}, true},

@@ -589,10 +589,31 @@ it('outer', () => {
 	if !strings.Contains(jsTests[0].Context, "Tracked in #42") {
 		t.Errorf("preceding comment above it.skip not attached: %q", jsTests[0].Context)
 	}
-	if !strings.Contains(jsTests[0].Context, "delete process.env.NO_PROXY") || !strings.Contains(jsTests[0].Context, "resetInner()") {
-		t.Errorf("inner test missing enclosing afterEach hooks: %q", jsTests[0].Context)
+	if !strings.Contains(jsTests[0].Context, "LIFECYCLE HOOKS IN THIS FILE:") || !strings.Contains(jsTests[0].Context, "delete process.env.NO_PROXY") || !strings.Contains(jsTests[0].Context, "resetInner()") {
+		t.Errorf("inner test missing labeled enclosing afterEach hooks: %q", jsTests[0].Context)
 	}
 	if !strings.Contains(jsTests[1].Context, "delete process.env.NO_PROXY") || strings.Contains(jsTests[1].Context, "resetInner()") {
 		t.Errorf("outer test should see only file-level afterEach, got: %q", jsTests[1].Context)
+	}
+
+	// Qualified test.afterEach hooks attach, and oversized hooks truncate at maxTestHookLines.
+	var longBody strings.Builder
+	longBody.WriteString("test.afterEach(() => {\n")
+	for i := range 75 {
+		longBody.WriteString("  cleanup(" + string(rune('a'+(i%26))) + ");\n")
+	}
+	longBody.WriteString("});\ntest('uses qualified hook', () => { expect(1).toBe(1); });\n")
+	pwUnits := splitTree("pw.spec.ts", []byte(longBody.String()), tsLangs["ts"])
+	var pwTest *Unit
+	for i := range pwUnits {
+		if pwUnits[i].Kind == "TestFunction" {
+			pwTest = &pwUnits[i]
+		}
+	}
+	if pwTest == nil || !strings.Contains(pwTest.Context, "test.afterEach") || !strings.Contains(pwTest.Context, "...") {
+		t.Fatalf("qualified test.afterEach missing or not truncated: %+v", pwTest)
+	}
+	if lines := strings.Count(pwTest.Context, "\n") + 1; lines > maxTestHookLines+5 {
+		t.Errorf("oversized hook exceeded line cap: %d lines", lines)
 	}
 }
