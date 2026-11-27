@@ -141,6 +141,10 @@ func TestSplitFileLintConfig(t *testing.T) {
 		"eslint.config.mjs":              true,
 		"sub/.eslintrc.json":             true,
 		"biome.json":                     true,
+		".oxlintrc.json":                 true,
+		".oxlintrc.jsonc":                true,
+		"oxlint.config.ts":               true,
+		"oxlint.config.mts":              true,
 		"ruff.toml":                      true,
 		"pyproject.toml":                 true,
 		".golangci.yml":                  true,
@@ -157,6 +161,10 @@ func TestSplitFileLintConfig(t *testing.T) {
 	yamlUnits := splitFile("lintdec.yaml", []byte("off:\n  - swallowed-error\n"))
 	if len(yamlUnits) != 1 || yamlUnits[0].Kind != "LintConfig" || yamlUnits[0].Start != 1 || yamlUnits[0].End != 2 {
 		t.Fatalf("expected single LintConfig unit for yaml, got %+v", yamlUnits)
+	}
+	oxUnits := splitFile(".oxlintrc.json", []byte("{\n  \"rules\": { \"no-console\": \"off\" }\n}\n"))
+	if len(oxUnits) != 1 || oxUnits[0].Kind != "LintConfig" || oxUnits[0].Start != 1 || oxUnits[0].End != 3 {
+		t.Fatalf("expected single LintConfig unit for .oxlintrc.json, got %+v", oxUnits)
 	}
 	jsUnits := splitFile("eslint.config.mjs", []byte("// TODO fix\nexport default [{ rules: { 'no-unused-vars': 'off' } }];\n"))
 	var hasLC, hasComment bool

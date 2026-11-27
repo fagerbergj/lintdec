@@ -33,6 +33,7 @@ var lintConfigNames = map[string]bool{
 	"eslint.config.js": true, "eslint.config.mjs": true, "eslint.config.cjs": true, "eslint.config.ts": true,
 	".eslintrc": true, ".eslintrc.json": true, ".eslintrc.js": true, ".eslintrc.cjs": true, ".eslintrc.yml": true, ".eslintrc.yaml": true,
 	"biome.json": true, "biome.jsonc": true,
+	".oxlintrc.json": true, ".oxlintrc.jsonc": true, "oxlint.config.ts": true, "oxlint.config.mts": true,
 	"ruff.toml": true, ".ruff.toml": true, "pyproject.toml": true,
 	".golangci.yml": true, ".golangci.yaml": true, ".golangci.toml": true, ".golangci.json": true,
 	".rubocop.yml": true, ".rubocop.yaml": true,
