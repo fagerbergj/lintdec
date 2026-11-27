@@ -141,6 +141,8 @@ func TestSplitFileLintConfig(t *testing.T) {
 		"eslint.config.mjs":              true,
 		"sub/.eslintrc.json":             true,
 		"biome.json":                     true,
+		".oxlintrc.json":                 true,
+		"oxlint.jsonc":                   true,
 		"ruff.toml":                      true,
 		"pyproject.toml":                 true,
 		".golangci.yml":                  true,
