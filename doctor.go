@@ -60,6 +60,7 @@ type repoInventory struct {
 	shellCount   int
 	configs      map[string][]string
 	manifests    map[string]bool
+	srcDirs      map[string]bool
 	workflows    []string
 	suppressions map[string]int
 }
@@ -253,6 +254,7 @@ func scanDoctorRepo(root string, excludes []string) (repoInventory, error) {
 		root:         root,
 		configs:      map[string][]string{},
 		manifests:    map[string]bool{},
+		srcDirs:      map[string]bool{},
 		suppressions: map[string]int{},
 	}
 	walkRoot(root, func(p string) {
@@ -271,11 +273,25 @@ func scanDoctorRepo(root string, excludes []string) (repoInventory, error) {
 	return inv, nil
 }
 
+func configStack(key string) string {
+	switch key {
+	case "ts", "tsconfig":
+		return "ts"
+	case "go":
+		return "go"
+	case "python_lint", "python_type", "pyproject":
+		return "python"
+	default:
+		return key
+	}
+}
+
 func pruneFixtureConfigs(inv *repoInventory) {
 	for k, list := range inv.configs {
+		stack := configStack(k)
 		var kept []string
 		for _, rel := range list {
-			if !fixtureScoped(rel, inv.manifests) {
+			if !fixtureScoped(stack, rel, inv.manifests, inv.srcDirs) {
 				kept = append(kept, rel)
 			}
 		}
@@ -286,30 +302,47 @@ func pruneFixtureConfigs(inv *repoInventory) {
 			inv.configs[k] = kept
 		}
 	}
+	activateSurvivingStacks(inv)
+}
+
+func activateSurvivingStacks(inv *repoInventory) {
 	if len(inv.configs["tsconfig"]) > 0 {
 		inv.hasTS, inv.tsManifest = true, true
 	}
-	if len(inv.configs["python_lint"]) > 0 || len(inv.configs["python_type"]) > 0 {
+	if len(inv.configs["python_lint"]) > 0 || len(inv.configs["python_type"]) > 0 || len(inv.configs["pyproject"]) > 0 {
 		inv.pyManifest = true
+	}
+	for key := range inv.manifests {
+		if !inv.srcDirs[key] {
+			continue
+		}
+		if strings.HasPrefix(key, "ts:") {
+			inv.tsManifest = true
+		} else if strings.HasPrefix(key, "go:") {
+			inv.goManifest = true
+		} else if strings.HasPrefix(key, "python:") {
+			inv.pyManifest = true
+		}
 	}
 }
 
-// fixtureScoped drops configs under docs/examples/testdata/fixtures unless that subtree declares a manifest.
-func fixtureScoped(rel string, manifests map[string]bool) bool {
+// fixtureScoped drops configs under fixture/example dirs unless that subtree has both a stack manifest and sources.
+func fixtureScoped(stack, rel string, manifests, srcDirs map[string]bool) bool {
 	if !isExampleOrFixturePath(rel) {
 		return false
 	}
 	for dir := path.Dir(rel); dir != "." && dir != "/"; dir = path.Dir(dir) {
-		if manifests[dir] && isExampleOrFixturePath(dir+"/x") {
+		key := stack + ":" + dir
+		if isExampleOrFixtureDir(dir) && manifests[key] && srcDirs[key] {
 			return false
 		}
 	}
 	return true
 }
 
-func isExampleOrFixturePath(rel string) bool {
-	dir := strings.ToLower(path.Dir(rel))
-	if dir == "." {
+func isExampleOrFixtureDir(dir string) bool {
+	dir = strings.ToLower(dir)
+	if dir == "." || dir == "/" {
 		return false
 	}
 	for seg := range strings.SplitSeq(dir, "/") {
@@ -321,6 +354,16 @@ func isExampleOrFixturePath(rel string) bool {
 	return false
 }
 
+func isExampleOrFixturePath(rel string) bool {
+	return isExampleOrFixtureDir(path.Dir(rel))
+}
+
+func markSourceAncestors(srcDirs map[string]bool, stack, dir string) {
+	for d := dir; d != "." && d != "/"; d = path.Dir(d) {
+		srcDirs[stack+":"+d] = true
+	}
+}
+
 func classifyDoctorFile(inv *repoInventory, abs, rel string) {
 	base := strings.ToLower(path.Base(rel))
 	if strings.HasPrefix(rel, ".github/workflows/") && (strings.HasSuffix(base, ".yml") || strings.HasSuffix(base, ".yaml")) {
@@ -329,19 +372,24 @@ func classifyDoctorFile(inv *repoInventory, abs, rel string) {
 	}
 	recordDoctorConfig(inv, base, rel)
 	ext := extOf(rel)
+	dir := path.Dir(rel)
 	switch ext {
 	case ".ts", ".tsx", ".mts", ".cts":
 		inv.hasTS = true
 		inv.tsCount++
+		markSourceAncestors(inv.srcDirs, "ts", dir)
 		countFileSuppressions(inv, "ts", abs, doctorSuppTSRe)
 	case ".js", ".jsx", ".mjs", ".cjs":
 		inv.tsCount++
+		markSourceAncestors(inv.srcDirs, "ts", dir)
 		countFileSuppressions(inv, "ts", abs, doctorSuppTSRe)
 	case ".go":
 		inv.goCount++
+		markSourceAncestors(inv.srcDirs, "go", dir)
 		countFileSuppressions(inv, "go", abs, doctorSuppGoRe)
 	case ".py":
 		inv.pyCount++
+		markSourceAncestors(inv.srcDirs, "python", dir)
 		countFileSuppressions(inv, "python", abs, doctorSuppPyRe)
 	case ".sh":
 		inv.shellCount++
@@ -374,25 +422,37 @@ func isPythonTypeConfig(base string) bool {
 	return base == "mypy.ini" || base == ".mypy.ini" || base == "pyrightconfig.json"
 }
 
+func recordManifest(inv *repoInventory, stack, rel string) {
+	inv.manifests[stack+":"+path.Dir(rel)] = true
+	if isExampleOrFixturePath(rel) {
+		return
+	}
+	switch stack {
+	case "ts":
+		inv.tsManifest = true
+	case "go":
+		inv.goManifest = true
+	case "python":
+		inv.pyManifest = true
+	}
+}
+
 func recordDoctorConfig(inv *repoInventory, base, rel string) {
 	switch {
 	case base == "package.json":
-		inv.tsManifest = true
-		inv.manifests[path.Dir(rel)] = true
+		recordManifest(inv, "ts", rel)
 	case isTSConfigFile(base):
 		inv.configs["tsconfig"] = append(inv.configs["tsconfig"], rel)
 	case isTSLinterConfig(base):
 		inv.configs["ts"] = append(inv.configs["ts"], rel)
 	case base == "go.mod":
-		inv.goManifest = true
-		inv.manifests[path.Dir(rel)] = true
+		recordManifest(inv, "go", rel)
 	case strings.HasPrefix(base, ".golangci."):
 		inv.configs["go"] = append(inv.configs["go"], rel)
 	case base == "ruff.toml" || base == ".ruff.toml":
 		inv.configs["python_lint"] = append(inv.configs["python_lint"], rel)
 	case isPythonManifest(base):
-		inv.pyManifest = true
-		inv.manifests[path.Dir(rel)] = true
+		recordManifest(inv, "python", rel)
 		if base == "pyproject.toml" {
 			inv.configs["pyproject"] = append(inv.configs["pyproject"], rel)
 		}

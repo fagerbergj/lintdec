@@ -656,4 +656,23 @@ func TestDoctorRound3Fixes(t *testing.T) {
 	if !foundSkip {
 		t.Fatalf("expected skipped workflow validation entry, got %+v", res.Validations)
 	}
+
+	// 3. Fixture manifests with no source files for that stack must not open phantom stack audits.
+	noSrcDir := t.TempDir()
+	writeTestFiles(t, noSrcDir, map[string]string{
+		"go.mod":                           "module example.com/nosrc\n",
+		"main.go":                          "package main\nfunc main() {}\n",
+		".golangci.yml":                    "version: \"2\"\nlinters:\n  default: all\n",
+		"docs/examples/web/package.json":   `{"name":"fixture"}`,
+		"testdata/fixtures/package.json":   `{"name":"fixture2"}`,
+		"testdata/fixtures/pyproject.toml": "[project]\nname = \"fixture\"\n",
+		".github/workflows/ci.yml":         "jobs:\n  lint:\n    steps:\n      - run: golangci-lint run\n",
+	})
+	noSrcRep, err := runDoctorAudit(noSrcDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(noSrcRep.Stacks) != 1 || noSrcRep.Stacks[0] != "go" || len(noSrcRep.Findings) != 0 {
+		t.Fatalf("fixture manifests without sources must not add stacks/findings; got stacks=%v findings=%+v", noSrcRep.Stacks, noSrcRep.Findings)
+	}
 }
