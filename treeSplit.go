@@ -118,19 +118,20 @@ func splitTree(filePath string, src []byte, cfg tsCfg) []Unit {
 	}
 	lines := strings.Split(string(src), "\n")
 	var units []Unit
+	var hooks []testHook
 	type docInfo struct {
 		text  string
 		start int
 	}
 	docs := map[*sitter.Node]docInfo{}
 
-	funcUnit := func(n *sitter.Node, kind string) Unit {
+	funcUnit := func(docNode, textNode, declNode *sitter.Node, kind string) Unit {
 		u := Unit{Kind: kind, File: filePath,
-			Start: int(n.StartPoint().Row) + 1, End: int(n.EndPoint().Row) + 1,
-			Text: n.Content(src), name: unitDeclName(n, src)}
-		if d, ok := docs[n.PrevSibling()]; ok {
+			Start: int(textNode.StartPoint().Row) + 1, End: int(textNode.EndPoint().Row) + 1,
+			Text: textNode.Content(src), name: unitDeclName(declNode, src)}
+		if d, ok := docs[docNode.PrevSibling()]; ok {
 			u.Context, u.ContextStart = d.text, d.start
-		} else if d := pythonDocstring(n, src); d != "" {
+		} else if d := pythonDocstring(declNode, src); d != "" {
 			u.Context = d
 		}
 		return u
@@ -153,29 +154,19 @@ func splitTree(filePath string, src []byte, cfg tsCfg) []Unit {
 			if !c.IsNamed() {
 				continue
 			}
-			// export_statement wraps the real declaration; unit the wrapper so
-			// the span keeps the export and the doc comment attaches.
-			if t == "export_statement" {
-				if inner := innerDecl(c); inner != nil {
-					if kind := kindForNode(inner, cfg, src); kind != "" {
-						units = append(units, funcUnit(c, kind))
-						continue
-					}
-				}
-				walk(c)
+			if hookNode := unwrapHookCall(c, cfg, src); hookNode != nil {
+				hooks = append(hooks, makeTestHook(n, c, hookNode, src))
 				continue
 			}
-			if t == "call_expression" && isHookCall(calleeName(c, src), cfg) {
-				continue
-			}
-			if kind := kindForNode(c, cfg, src); kind != "" {
-				units = append(units, funcUnit(c, kind))
+			if textNode, declNode, kind := unwrapUnitNode(c, cfg, src); kind != "" {
+				units = append(units, funcUnit(c, textNode, declNode, kind))
 				continue
 			}
 			walk(c)
 		}
 	}
 	walk(root)
+	attachTestHooks(units, hooks)
 	if cfg.bodyUnits {
 		units = append(units, shellBodyUnits(root, filePath, src, lines)...)
 	}
@@ -189,12 +180,7 @@ func splitTree(filePath string, src []byte, cfg tsCfg) []Unit {
 		if !child.IsNamed() || strings.Contains(child.Type(), "comment") {
 			continue
 		}
-		target := child
-		if child.Type() == "export_statement" {
-			if inner := innerDecl(child); inner != nil {
-				target = inner
-			}
-		}
+		target := unwrapSkeletonNode(child)
 		if name := declName(target, src); name != "" {
 			sk = append(sk, fmt.Sprintf("%s %s (%d-%d)", target.Type(), name,
 				child.StartPoint().Row+1, child.EndPoint().Row+1))
@@ -328,7 +314,7 @@ func shellBodyUnits(root *sitter.Node, filePath string, src []byte, lines []stri
 	return units
 }
 
-// innerDecl: the declaration wrapped by an export_statement.
+// innerDecl: the declaration wrapped by an export_statement or expression_statement.
 func innerDecl(n *sitter.Node) *sitter.Node {
 	for i, count := 0, int(n.ChildCount()); i < count; i++ {
 		c := n.Child(i)
@@ -339,15 +325,135 @@ func innerDecl(n *sitter.Node) *sitter.Node {
 	return nil
 }
 
+// unwrapUnitNode returns (textNode, declNode, kind) for a lintable unit or wrapper,
+// keeping exports/decorators in textNode and unwrapping expression_statement test calls.
+func unwrapUnitNode(n *sitter.Node, cfg tsCfg, src []byte) (*sitter.Node, *sitter.Node, string) {
+	switch n.Type() {
+	case "export_statement":
+		if inner := innerDecl(n); inner != nil {
+			if kind := kindForNode(inner, cfg, src); kind != "" {
+				return n, inner, kind
+			}
+		}
+		return nil, nil, ""
+	case "decorated_definition":
+		if inner := n.ChildByFieldName("definition"); inner != nil {
+			if kind := kindForNode(inner, cfg, src); kind != "" {
+				return n, inner, kind
+			}
+		}
+		return nil, nil, ""
+	case "expression_statement":
+		if inner := innerDecl(n); inner != nil && inner.Type() == "call_expression" {
+			if kind := kindForNode(inner, cfg, src); kind == "TestFunction" {
+				return inner, inner, kind
+			}
+		}
+		return nil, nil, ""
+	}
+	if kind := kindForNode(n, cfg, src); kind != "" {
+		return n, n, kind
+	}
+	return nil, nil, ""
+}
+
+func unwrapHookCall(n *sitter.Node, cfg tsCfg, src []byte) *sitter.Node {
+	target := n
+	if n.Type() == "expression_statement" {
+		target = innerDecl(n)
+	}
+	if target != nil && target.Type() == "call_expression" && isHookCall(calleeName(target, src), cfg) {
+		return target
+	}
+	return nil
+}
+
+func unwrapSkeletonNode(n *sitter.Node) *sitter.Node {
+	switch n.Type() {
+	case "export_statement":
+		if inner := innerDecl(n); inner != nil {
+			return inner
+		}
+	case "decorated_definition":
+		if inner := n.ChildByFieldName("definition"); inner != nil {
+			return inner
+		}
+	}
+	return n
+}
+
+const (
+	maxTestHookLines = 60
+	maxTestHookTotal = 80
+)
+
+type testHook struct {
+	scopeStart int
+	scopeEnd   int
+	lines      int
+	text       string
+}
+
+func makeTestHook(parent, stmt, hook *sitter.Node, src []byte) testHook {
+	start := int(hook.StartPoint().Row) + 1
+	rawLines := strings.Split(hook.Content(src), "\n")
+	if len(rawLines) > maxTestHookLines {
+		rawLines = append(rawLines[:maxTestHookLines], "...")
+	}
+	text := numberedLines(strings.Join(rawLines, "\n"), start)
+	lineCount := len(rawLines)
+	if prev := stmt.PrevSibling(); prev != nil && strings.Contains(prev.Type(), "comment") && prev.EndPoint().Row+1 == stmt.StartPoint().Row {
+		if doc, docStart := docRun(prev, src); doc != "" {
+			docLines := strings.Split(doc, "\n")
+			text = numberedLines(doc, docStart) + "\n" + text
+			lineCount += len(docLines)
+		}
+	}
+	return testHook{
+		scopeStart: int(parent.StartPoint().Row) + 1,
+		scopeEnd:   int(parent.EndPoint().Row) + 1,
+		lines:      lineCount,
+		text:       text,
+	}
+}
+
+// attachTestHooks appends enclosing suite lifecycle hooks (afterEach/beforeEach) to TestFunction Context.
+func attachTestHooks(units []Unit, hooks []testHook) {
+	if len(hooks) == 0 {
+		return
+	}
+	for i := range units {
+		if units[i].Kind != "TestFunction" {
+			continue
+		}
+		var refs []string
+		used := 0
+		for _, h := range hooks {
+			if h.scopeStart > units[i].Start || units[i].End > h.scopeEnd {
+				continue
+			}
+			if used+h.lines > maxTestHookTotal {
+				continue
+			}
+			refs = append(refs, h.text)
+			used += h.lines
+		}
+		if len(refs) == 0 {
+			continue
+		}
+		block := "LIFECYCLE HOOKS IN THIS FILE:\n" + strings.Join(refs, "\n\n")
+		if units[i].Context != "" {
+			units[i].Context = units[i].Context + "\n\n" + block
+		} else {
+			units[i].Context = block
+		}
+	}
+}
+
 // isUnitStart: nodes that begin a lintable unit (doc comments attach to these).
 func isUnitStart(n *sitter.Node, cfg tsCfg, src []byte) bool {
-	if n.Type() == "export_statement" {
-		if inner := innerDecl(n); inner != nil {
-			return kindForNode(inner, cfg, src) != ""
-		}
-		return false
-	}
-	return kindForNode(n, cfg, src) != ""
+	_, _, kind := unwrapUnitNode(n, cfg, src)
+	return kind != ""
 }
 
 // attachesDoc reports whether c sits on the line immediately above a lintable sibling unit.
@@ -483,7 +589,14 @@ func isTestCall(callee string, cfg tsCfg) bool {
 }
 
 func isHookCall(callee string, cfg tsCfg) bool {
-	return len(cfg.callHooks) > 0 && cfg.callHooks[callee]
+	if len(cfg.callHooks) == 0 {
+		return false
+	}
+	if cfg.callHooks[callee] {
+		return true
+	}
+	base, prop, ok := strings.Cut(callee, ".")
+	return ok && (base == "test" || base == "describe") && cfg.callHooks[prop]
 }
 
 func kindForNode(n *sitter.Node, cfg tsCfg, src []byte) string {

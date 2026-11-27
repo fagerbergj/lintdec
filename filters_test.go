@@ -53,6 +53,9 @@ func TestRuleEligibleDeterministicFilters(t *testing.T) {
 
 		{"test-ignored-no-reason", Unit{Kind: "TestFunction", Text: "func TestA(t *testing.T) { t.Skip(\"x\") }"}, true},
 		{"test-ignored-no-reason", Unit{Kind: "TestFunction", Text: "@Disabled\nfun check() {}"}, true},
+		{"test-ignored-no-reason", Unit{Kind: "TestFunction", Text: "@pytest.mark.skipif(True, reason='x')\ndef test_a(): pass"}, true},
+		{"test-ignored-no-reason", Unit{Kind: "TestFunction", Text: "def test_a():\n    pytest.skip('later')"}, true},
+		{"test-ignored-no-reason", Unit{Kind: "TestFunction", Text: "@unittest.skipIf(True, 'x')\ndef test_a(self): pass"}, true},
 		{"test-ignored-no-reason", Unit{Kind: "TestFunction", Text: "func TestExit(t *testing.T) { exit(0) }"}, false},
 
 		{"test-over-mocked", Unit{Kind: "TestFunction", Text: "it('x', () => { const f = vi.fn(); })"}, true},
@@ -68,7 +71,7 @@ func TestRuleEligibleDeterministicFilters(t *testing.T) {
 		{"test-shared-state", Unit{Kind: "TestFunction", Text: "os.environ[\"HOME\"] = \"/tmp/x\""}, true},
 		{"test-shared-state", Unit{Kind: "TestFunction", Text: "os.environ[\"PATH\"] += \":/opt/bin\""}, true},
 		{"test-shared-state", Unit{Kind: "TestFunction", Text: "del os.environ[\"HOME\"]"}, true},
-		{"test-shared-state", Unit{Kind: "TestFunction", Text: "monkeypatch.setenv('A', '1')"}, true},
+		{"test-shared-state", Unit{Kind: "TestFunction", Text: "monkeypatch.setenv('A', '1')"}, false},
 		{"test-shared-state", Unit{Kind: "TestFunction", Text: "const key = process.env.API_KEY"}, false},
 		{"test-shared-state", Unit{Kind: "TestFunction", Text: "if (process.env.CI === 'true') return;"}, false},
 		{"test-shared-state", Unit{Kind: "TestFunction", Text: "home = os.environ[\"HOME\"]"}, false},
