@@ -101,6 +101,10 @@ func defaultInclude() []string {
 }
 
 func walkRoot(root string, fn func(string)) {
+	walkRootAllowingWorktreeRoot(root, false, fn)
+}
+
+func walkRootAllowingWorktreeRoot(root string, allowRootWorktree bool, fn func(string)) {
 	ignored := gitIgnored(root)
 	filepath.WalkDir(root, func(p string, d iofs.DirEntry, err error) error {
 		if err != nil {
@@ -120,7 +124,7 @@ func walkRoot(root string, fn func(string)) {
 				}
 				return filepath.SkipDir
 			}
-			if isWorktree(p) {
+			if isWorktree(p) && (!allowRootWorktree || p != root) {
 				fmt.Fprintf(os.Stderr, "skip: %s is a git worktree of another checkout (pass specific files to lint it)\n", p)
 				return filepath.SkipDir
 			}
