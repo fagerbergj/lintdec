@@ -11,13 +11,16 @@ var (
 	todoTagRe          = regexp.MustCompile(`(?i)(?:^|[^-\w])(?:TODO|FIXME|HACK|XXX)(?:[^-\w]|$)`)
 	listConjRe         = regexp.MustCompile(`(?i)\b(?:and|or)\b`)
 	readerRefRe        = regexp.MustCompile(`(?i)\b(?:you|your|you're|you've|yourself|user|users|reader|readers)\b`)
+	blameCueRe         = regexp.MustCompile(`(?i)\b(?:fail(?:ed|s|ing|ure)?|forgot(?:ten)?|forget|mistake[sn]?|wrong(?:ly)?|invalid|incorrect(?:ly)?|fault|misconfigur\w*|misus\w*|misspell\w*|misunderstand\w*|neglect\w*|omit(?:ted|s)?|miss(?:ed|ing)|ignor(?:ed|ing)|should have|shouldn't|must not|improper\w*|violat\w*|broke|broken|corrupt\w*|illegal|malformed|didn't|did not|left out)\b`)
 	altRefRe           = regexp.MustCompile(`(?i)\b(?:alternatives?|options?|considered|rejected|instead of|vs\.?|versus|trade-?offs?)\b`)
+	altHeadingRe       = regexp.MustCompile(`(?im)^#{1,3}\s+.*(?:alternatives?|options considered|trade-?offs?)`)
 	adrPathTitleRe     = regexp.MustCompile(`(?i)\b(?:adrs?|decisions?)\b`)
 	adrHeadingRe       = regexp.MustCompile(`(?im)^#{1,3}\s+(?:status|context|decision|consequences|trade-?offs?)\b`)
 	rfcPathTitleRe     = regexp.MustCompile(`(?i)\b(?:rfcs?|rfds?|proposals?|design)\b`)
 	rfcHeadingRe       = regexp.MustCompile(`(?im)^#{1,3}\s+(?:proposal|motivation|proposed change|detailed design|design)\b`)
 	testSkipRe         = regexp.MustCompile(`(?i)(?:^|[^-\w])(?:t\.Skip\w*|test\.skip|it\.skip|describe\.skip|xit|xtest|@Disabled|@Ignore|@pytest\.mark\.skip(?:if)?|pytest\.skip|unittest\.skip(?:If|Unless)?)(?:[^-\w]|$)`)
 	testMockRe         = regexp.MustCompile(`(?i)\b(?:vi\.fn|vi\.mock|vi\.spyOn|jest\.fn|jest\.mock|jest\.spyOn|MagicMock|create_autospec|sinon\.|gomock|mockk|Mockito|unittest\.mock)\b|\bpatch\s*\(`)
+	mockAssertRe       = regexp.MustCompile(`(?i)\b(?:toHaveBeenCalled\w*|toHaveReturned\w*|assert_called\w*|assert_any_call|assert_has_calls|calledWith|calledOnce|calledTwice|callCount|EXPECT\(\))\b`)
 	testSharedStateRe  = regexp.MustCompile(`(?i)(?:os\.(?:Set|Unset)env|process\.env\.\w+\s*=\s*[^=\s]|process\.env\[[^\]]+\]\s*=\s*[^=\s]|delete\s+process\.env|os\.environ\[[^\]]+\]\s*\+?=[^=]|del\s+os\.environ|os\.Chdir|process\.chdir|(?:/tmp/|localhost:\d|127\.0\.0\.1:\d)|(?:os\.)?writeFile(?:Sync)?\s*\(\s*["'` + "`" + `])`)
 	remediationHeadRe  = regexp.MustCompile(`(?i)^#{1,6}\s+.*(?:troubleshoot|error|warning|failure|debug|known issues|faq|caveat)`)
 	retryRe            = regexp.MustCompile(`(?i)\b(?:retry|retries|retried|backoff|maxRetries|maxAttempts|retryCount|retryDelay)\b|\bfor\s*\{|\bfor\s*\(\s*;\s*;\s*\)|\bwhile\s*\(\s*(?:true|1)\s*\)|\bwhile\s+True\s*:|\bloop\s*\{`)
@@ -27,22 +30,24 @@ var (
 
 // ruleFilters maps rule IDs to deterministic pre-filters; suppression-no-reason filters by construction via Directive kind.
 var ruleFilters = map[string]func(Unit) bool{
-	"todo-no-owner":             func(u Unit) bool { return todoTagRe.MatchString(u.Text) },
-	"comment-long":              func(u Unit) bool { return u.End-u.Start+1 >= 3 || len(strings.Fields(u.Text)) >= 50 },
-	"md-prose-list":             func(u Unit) bool { return hasInlineListPunct(u.Text) },
-	"md-no-purpose":             func(u Unit) bool { return nonEmptyLines(u.Text) >= 3 },
-	"md-blames-reader":          func(u Unit) bool { return readerRefRe.MatchString(u.Text) },
-	"md-one-sided-alternatives": func(u Unit) bool { return altRefRe.MatchString(u.Text) },
-	"md-adr-many-decisions":     isADRDoc,
-	"md-adr-no-cost":            isADRDoc,
-	"md-rfc-no-ask":             isRFCDoc,
-	"test-ignored-no-reason":    func(u Unit) bool { return testSkipRe.MatchString(u.Text) },
-	"test-over-mocked":          func(u Unit) bool { return testMockRe.MatchString(u.Text) },
-	"test-shared-state":         func(u Unit) bool { return testSharedStateRe.MatchString(u.Text) },
-	"md-no-remediation":         func(u Unit) bool { return remediationHeadRe.MatchString(firstNonEmptyLine(u.Text)) },
-	"unbounded-retry":           func(u Unit) bool { return retryRe.MatchString(u.Text) },
-	"hand-rolled-stdlib":        func(u Unit) bool { return u.End-u.Start+1 >= 8 && handRolledStdlibRe.MatchString(u.Text) },
-	"lint-config-weakened":      func(u Unit) bool { return lintConfigWeakRe.MatchString(u.Text) },
+	"todo-no-owner":    func(u Unit) bool { return todoTagRe.MatchString(u.Text) },
+	"comment-long":     func(u Unit) bool { return u.End-u.Start+1 >= 3 || len(strings.Fields(u.Text)) >= 50 },
+	"md-prose-list":    func(u Unit) bool { return hasInlineListPunct(u.Text) },
+	"md-no-purpose":    func(u Unit) bool { return nonEmptyLines(u.Text) >= 3 },
+	"md-blames-reader": func(u Unit) bool { return readerRefRe.MatchString(u.Text) && blameCueRe.MatchString(u.Text) },
+	"md-one-sided-alternatives": func(u Unit) bool {
+		return altRefRe.MatchString(u.Text) && (isADRDoc(u) || isRFCDoc(u) || altHeadingRe.MatchString(u.Text))
+	},
+	"md-adr-many-decisions":  isADRDoc,
+	"md-adr-no-cost":         isADRDoc,
+	"md-rfc-no-ask":          isRFCDoc,
+	"test-ignored-no-reason": func(u Unit) bool { return testSkipRe.MatchString(u.Text) },
+	"test-over-mocked":       func(u Unit) bool { return isOverMockCandidate(u.Text) },
+	"test-shared-state":      func(u Unit) bool { return testSharedStateRe.MatchString(u.Text) },
+	"md-no-remediation":      func(u Unit) bool { return remediationHeadRe.MatchString(firstNonEmptyLine(u.Text)) },
+	"unbounded-retry":        func(u Unit) bool { return retryRe.MatchString(u.Text) },
+	"hand-rolled-stdlib":     func(u Unit) bool { return u.End-u.Start+1 >= 8 && handRolledStdlibRe.MatchString(u.Text) },
+	"lint-config-weakened":   func(u Unit) bool { return lintConfigWeakRe.MatchString(u.Text) },
 }
 
 func ruleEligible(r Rule, u Unit) bool {
@@ -95,6 +100,11 @@ func isRFCDoc(u Unit) bool {
 		return true
 	}
 	return rfcHeadingRe.MatchString(u.Text)
+}
+
+func isOverMockCandidate(text string) bool {
+	n := len(testMockRe.FindAllStringIndex(text, 3))
+	return n >= 3 || (n >= 1 && mockAssertRe.MatchString(text))
 }
 
 func firstNonEmptyLine(text string) string {

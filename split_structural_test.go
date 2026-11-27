@@ -178,15 +178,15 @@ func TestSplitFileLintConfig(t *testing.T) {
 	if got := splitFile("pyproject.toml", []byte(pyPkgOnly)); got != nil {
 		t.Fatalf("packaging-only pyproject.toml should emit no LintConfig, got %+v", got)
 	}
-	pyWithRuff := "[project]\nname = \"demo\"\n\n[tool.ruff.lint]\nextend-exclude = [\n  [\"nested\"],\n]\nignore = [\"F841\"]\n\n[tool.hatch.build]\npackages = [\"demo\"]\n\n[tool.mypy]\nstrict = false\n\n[tool.pytest.ini_options]\nfilterwarnings = [\"ignore::DeprecationWarning\"]\n"
+	pyWithRuff := "[project]\nname = \"demo\"\n\n[tool.ruff.lint]\nextend-exclude = [\n  [\"nested\"],\n]\nignore = [\"F841\"]\n\n[tool.hatch.build]\npackages = [\"demo\"]\n\n[tool.mypy]\nstrict = false\n\n[tool.pylint.\"messages control\"]\ndisable = [\"missing-docstring\"]\n\n[tool.pytest.ini_options]\nfilterwarnings = [\"ignore::DeprecationWarning\"]\n"
 	pyUnits := splitFile("pyproject.toml", []byte(pyWithRuff))
 	if len(pyUnits) != 2 {
-		t.Fatalf("expected 2 contiguous LintConfig runs (ruff and mypy, excluding hatch/pytest), got %d: %+v", len(pyUnits), pyUnits)
+		t.Fatalf("expected 2 contiguous LintConfig runs (ruff and mypy+pylint, excluding hatch/pytest), got %d: %+v", len(pyUnits), pyUnits)
 	}
 	if pyUnits[0].Kind != "LintConfig" || pyUnits[0].Start != 4 || pyUnits[0].End != 8 || !strings.Contains(pyUnits[0].Text, "F841") {
 		t.Fatalf("first pyproject.toml LintConfig unexpected: %+v", pyUnits[0])
 	}
-	if pyUnits[1].Kind != "LintConfig" || pyUnits[1].Start != 13 || pyUnits[1].End != 14 || !strings.Contains(pyUnits[1].Text, "strict = false") {
+	if pyUnits[1].Kind != "LintConfig" || pyUnits[1].Start != 13 || pyUnits[1].End != 17 || !strings.Contains(pyUnits[1].Text, "strict = false") || !strings.Contains(pyUnits[1].Text, "missing-docstring") {
 		t.Fatalf("second pyproject.toml LintConfig unexpected: %+v", pyUnits[1])
 	}
 }

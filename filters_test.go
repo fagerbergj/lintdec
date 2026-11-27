@@ -37,10 +37,14 @@ func TestRuleEligibleDeterministicFilters(t *testing.T) {
 		{"md-no-purpose", Unit{Kind: "Document", Text: "# Title\n\nFirst paragraph.\n\nSecond paragraph."}, true},
 
 		{"md-blames-reader", Unit{Kind: "Paragraph", Text: "The parser rejects malformed input."}, false},
+		{"md-blames-reader", Unit{Kind: "Paragraph", Text: "You can run the CLI with --help to list commands."}, false},
 		{"md-blames-reader", Unit{Kind: "Paragraph", Text: "You passed an invalid flag."}, true},
+		{"md-blames-reader", Unit{Kind: "Paragraph", Text: "You forgot to set the token before starting."}, true},
 
 		{"md-one-sided-alternatives", Unit{Kind: "Document", Text: "# Guide\n\nRun the command."}, false},
+		{"md-one-sided-alternatives", Unit{Kind: "Document", File: "README.md", Text: "# CLI\n\nUse --json instead of --text for scripting options."}, false},
 		{"md-one-sided-alternatives", Unit{Kind: "Document", Text: "# ADR\n\n## Alternatives considered\n\nSQLite."}, true},
+		{"md-one-sided-alternatives", Unit{Kind: "Document", File: "docs/rfc-004.md", Text: "# Cache\n\nWe chose LRU instead of LFU."}, true},
 
 		{"md-adr-no-cost", Unit{Kind: "Document", File: "README.md", Text: "# App\n\n## Install\n\nRun it."}, false},
 		{"md-adr-no-cost", Unit{Kind: "Document", File: "docs/adr/001-db.md", Text: "# Use Postgres\n\nBody."}, true},
@@ -58,7 +62,9 @@ func TestRuleEligibleDeterministicFilters(t *testing.T) {
 		{"test-ignored-no-reason", Unit{Kind: "TestFunction", Text: "@unittest.skipIf(True, 'x')\ndef test_a(self): pass"}, true},
 		{"test-ignored-no-reason", Unit{Kind: "TestFunction", Text: "func TestExit(t *testing.T) { exit(0) }"}, false},
 
-		{"test-over-mocked", Unit{Kind: "TestFunction", Text: "it('x', () => { const f = vi.fn(); })"}, true},
+		{"test-over-mocked", Unit{Kind: "TestFunction", Text: "it('x', () => { const f = vi.fn(); expect(run(f)).toBe(2); })"}, false},
+		{"test-over-mocked", Unit{Kind: "TestFunction", Text: "it('x', () => { const f = vi.fn(); run(f); expect(f).toHaveBeenCalled(); })"}, true},
+		{"test-over-mocked", Unit{Kind: "TestFunction", Text: "it('x', () => { const a = vi.fn(); const b = vi.fn(); const c = vi.spyOn(o, 'm'); })"}, true},
 		{"test-over-mocked", Unit{Kind: "TestFunction", Text: "it('x', () => { expect(1+1).toBe(2); })"}, false},
 
 		{"test-shared-state", Unit{Kind: "TestFunction", Text: "os.WriteFile(\"/tmp/a\", b, 0644)"}, true},
