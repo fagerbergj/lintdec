@@ -37,6 +37,7 @@ type DoctorReport struct {
 type doctorOpts struct {
 	root        string
 	out         string
+	exclude     string
 	fix         bool
 	dryRun      bool
 	provider    string
@@ -50,10 +51,6 @@ type doctorOpts struct {
 type repoInventory struct {
 	root         string
 	hasTS        bool
-	hasJS        bool
-	hasGo        bool
-	hasPython    bool
-	hasShell     bool
 	tsManifest   bool
 	goManifest   bool
 	pyManifest   bool
@@ -73,10 +70,15 @@ var (
 	doctorSuppShRe   = regexp.MustCompile(`(?i)#\s*shellcheck\s+disable=`)
 	tsStrictTrueRe   = regexp.MustCompile(`"strict"\s*:\s*true\b`)
 	tsUnusedOffRe    = regexp.MustCompile(`reportUnusedDisableDirectives\s*[:=]\s*(?:['"]off['"]|false)`)
-	tsRuleWeakRe     = regexp.MustCompile(`(?m)['"]?(?:@typescript-eslint/|typescript/)?(?:no-floating-promises|no-misused-promises|no-explicit-any|no-unused-vars|no-empty)['"]?\s*:\s*(?:['"](?:off|warn)['"]|[01]\b|\[\s*['"](?:off|warn)['"])`)
+	tsRuleAssignRe   = regexp.MustCompile(`(?m)['"]?((?:@typescript-eslint/|typescript/)?(?:no-floating-promises|no-misused-promises|no-explicit-any|no-unused-vars|no-empty))['"]?\s*:\s*(?:['"](off|warn|error)['"]|([012])\b|\[\s*['"](off|warn|error)['"])`)
 	goCoreLinters    = []string{"errcheck", "govet", "staticcheck", "ineffassign", "gosec", "errorlint", "modernize"}
-	goDisableEntryRe = regexp.MustCompile(`(?m)^\s*-\s*([a-zA-Z0-9_-]+)\b`)
+	goListEntryRe    = regexp.MustCompile(`(?m)^\s*-\s*["']?([a-zA-Z0-9_-]+)["']?\b`)
+	goInlineListRe   = regexp.MustCompile(`(?m)["']?(disable|enable)["']?\s*[:=]\s*\[([^\]]*)\]`)
+	goDefaultNoneRe  = regexp.MustCompile(`(?i)\b(?:default\s*[:=]\s*["']?none["']?|disable-all\s*[:=]\s*true)\b`)
+	goDefaultAllRe   = regexp.MustCompile(`(?i)\b(?:default\s*[:=]\s*["']?all["']?|enable-all\s*[:=]\s*true)\b`)
+	goIdentTokenRe   = regexp.MustCompile(`[a-zA-Z0-9_-]+`)
 	pyRuffSelectRe   = regexp.MustCompile(`(?m)^\s*(?:extend-)?select\s*=\s*\[([^\]]*)\]`)
+	pyRuffIgnoreRe   = regexp.MustCompile(`(?m)^\s*(?:extend-)?ignore\s*=\s*\[([^\]]*)\]`)
 	pyRuffWeakIgnRe  = regexp.MustCompile(`(?i)['"](?:F841|F401|E722|B\d*|S\d*|ASYNC\d*)['"]`)
 	pyTypeWeakRe     = regexp.MustCompile(`(?i)(?:typeCheckingMode\s*=\s*['"](?:off|basic)['"]|ignore_errors\s*=\s*true|strict\s*=\s*false)`)
 	ciNeuteredStepRe = regexp.MustCompile(`(?i)(?:eslint|oxlint|biome|golangci-lint|ruff|mypy|pyright|shellcheck|npm\s+run\s+lint|pnpm\s+(?:run\s+)?lint|yarn\s+lint)[^\n]*(?:\|\|\s*true|\|\|\s*exit\s+0|--max-warnings\s+[1-9])`)
@@ -98,13 +100,18 @@ func doctorCmd(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	rep, err := runDoctorAudit(o.root)
+	pc, warns := loadProjectConfig(o.root)
+	for _, w := range warns {
+		fmt.Fprintln(os.Stderr, "warn:", w)
+	}
+	excludes := doctorExcludes(o, pc)
+	rep, err := runDoctorAuditWithExclude(o.root, excludes)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
 	if o.fix && len(rep.Findings) > 0 {
-		code := runDoctorFixFlow(o, &rep)
+		code := runDoctorFixFlow(o, pc, excludes, &rep)
 		if code != 0 {
 			return code
 		}
@@ -116,8 +123,17 @@ func doctorCmd(args []string) int {
 	return 0
 }
 
-func runDoctorFixFlow(o doctorOpts, rep *DoctorReport) int {
-	pc, _ := loadProjectConfig(o.root)
+func doctorExcludes(o doctorOpts, pc ProjectConfig) []string {
+	out := append([]string(nil), pc.Exclude...)
+	for _, raw := range strings.Split(o.exclude, ",") {
+		if g := strings.TrimSpace(raw); g != "" {
+			out = append(out, g)
+		}
+	}
+	return out
+}
+
+func runDoctorFixFlow(o doctorOpts, pc ProjectConfig, excludes []string, rep *DoctorReport) int {
 	ep, note, err := resolveDoctorChatProvider(o, pc)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -133,8 +149,11 @@ func runDoctorFixFlow(o doctorOpts, rep *DoctorReport) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
+	if res.Cost != "" && o.out == "text" {
+		fmt.Fprintln(os.Stderr, res.Cost)
+	}
 	if !o.dryRun {
-		after, err := runDoctorAudit(o.root)
+		after, err := runDoctorAuditWithExclude(o.root, excludes)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 2
@@ -150,6 +169,7 @@ func parseDoctorFlags(args []string) (doctorOpts, error) {
 	fs.SetOutput(os.Stderr)
 	var o doctorOpts
 	fs.StringVar(&o.out, "out", "text", "output: text|json")
+	fs.StringVar(&o.exclude, "exclude", "", "comma-separated glob exclude filters")
 	fs.BoolVar(&o.fix, "fix", false, "generate/harden deterministic linter configs and diff-gated CI using a configured chat LLM")
 	fs.BoolVar(&o.dryRun, "dry-run", false, "with --fix, preview proposed files without writing to disk")
 	fs.StringVar(&o.provider, "provider", "", "provider name from global config (for --fix)")
@@ -162,8 +182,8 @@ func parseDoctorFlags(args []string) (doctorOpts, error) {
 		fmt.Fprint(os.Stderr, `Usage: lintdec doctor [flags] [path]
 
 Audits deterministic linter configs, typecheckers, suppression hygiene, and CI wiring.
-With --fix, uses a configured chat (openai-protocol) LLM to generate or harden configs
-and diff-gated CI workflows directly on disk (rely on git diff to review/revert).
+With --fix, uses a configured chat (openai-protocol) LLM to generate or harden standalone
+linter configs and diff-gated CI workflows directly on disk (rely on git diff to review/revert).
 
 Flags:
 `)
@@ -190,7 +210,11 @@ Flags:
 }
 
 func runDoctorAudit(root string) (DoctorReport, error) {
-	inv, err := scanDoctorRepo(root)
+	return runDoctorAuditWithExclude(root, nil)
+}
+
+func runDoctorAuditWithExclude(root string, excludes []string) (DoctorReport, error) {
+	inv, err := scanDoctorRepo(root, excludes)
 	if err != nil {
 		return DoctorReport{}, err
 	}
@@ -212,7 +236,7 @@ func runDoctorAudit(root string) (DoctorReport, error) {
 		rep.Stacks = append(rep.Stacks, "python")
 		rep.Findings = append(rep.Findings, auditPython(inv)...)
 	}
-	if inv.hasShell {
+	if inv.shellCount >= 3 || len(inv.configs["shell"]) > 0 {
 		rep.Stacks = append(rep.Stacks, "shell")
 		rep.Findings = append(rep.Findings, auditShell(inv)...)
 	}
@@ -222,7 +246,7 @@ func runDoctorAudit(root string) (DoctorReport, error) {
 	return rep, nil
 }
 
-func scanDoctorRepo(root string) (repoInventory, error) {
+func scanDoctorRepo(root string, excludes []string) (repoInventory, error) {
 	inv := repoInventory{
 		root:         root,
 		configs:      map[string][]string{},
@@ -234,6 +258,9 @@ func scanDoctorRepo(root string) (repoInventory, error) {
 			return
 		}
 		rel = filepath.ToSlash(rel)
+		if doctorExcluded(rel, excludes) {
+			return
+		}
 		classifyDoctorFile(&inv, p, rel)
 	})
 	for k := range inv.configs {
@@ -243,16 +270,22 @@ func scanDoctorRepo(root string) (repoInventory, error) {
 	return inv, nil
 }
 
+func doctorExcluded(rel string, excludes []string) bool {
+	for _, g := range excludes {
+		if matchGlob(g, rel) {
+			return true
+		}
+	}
+	return false
+}
+
 func classifyDoctorFile(inv *repoInventory, abs, rel string) {
 	base := strings.ToLower(path.Base(rel))
-	depth := strings.Count(rel, "/")
 	if strings.HasPrefix(rel, ".github/workflows/") && (strings.HasSuffix(base, ".yml") || strings.HasSuffix(base, ".yaml")) {
 		inv.workflows = append(inv.workflows, rel)
 		return
 	}
-	if depth <= 2 {
-		recordDoctorConfig(inv, base, rel)
-	}
+	recordDoctorConfig(inv, base, rel)
 	ext := extOf(rel)
 	switch ext {
 	case ".ts", ".tsx", ".mts", ".cts":
@@ -260,24 +293,19 @@ func classifyDoctorFile(inv *repoInventory, abs, rel string) {
 		inv.tsCount++
 		countFileSuppressions(inv, "ts", abs, doctorSuppTSRe)
 	case ".js", ".jsx", ".mjs", ".cjs":
-		inv.hasJS = true
 		inv.tsCount++
 		countFileSuppressions(inv, "ts", abs, doctorSuppTSRe)
 	case ".go":
-		inv.hasGo = true
 		inv.goCount++
 		countFileSuppressions(inv, "go", abs, doctorSuppGoRe)
 	case ".py":
-		inv.hasPython = true
 		inv.pyCount++
 		countFileSuppressions(inv, "python", abs, doctorSuppPyRe)
 	case ".sh":
-		inv.hasShell = true
 		inv.shellCount++
 		countFileSuppressions(inv, "shell", abs, doctorSuppShRe)
 	case "":
 		if src, ok := readSmallFile(abs); ok && isShellShebang(src) {
-			inv.hasShell = true
 			inv.shellCount++
 			if !isGeneratedFile(src) {
 				inv.suppressions["shell"] += len(doctorSuppShRe.FindAllIndex(src, -1))
@@ -299,26 +327,26 @@ func isPythonManifest(base string) bool {
 func recordDoctorConfig(inv *repoInventory, base, rel string) {
 	switch {
 	case base == "package.json":
-		inv.hasJS, inv.tsManifest = true, true
+		inv.tsManifest = true
 	case strings.HasPrefix(base, "tsconfig") && strings.HasSuffix(base, ".json"):
 		inv.hasTS, inv.tsManifest = true, true
 		inv.configs["tsconfig"] = append(inv.configs["tsconfig"], rel)
 	case isTSLinterConfig(base):
 		inv.configs["ts"] = append(inv.configs["ts"], rel)
 	case base == "go.mod":
-		inv.hasGo, inv.goManifest = true, true
+		inv.goManifest = true
 	case strings.HasPrefix(base, ".golangci."):
 		inv.configs["go"] = append(inv.configs["go"], rel)
 	case base == "ruff.toml" || base == ".ruff.toml":
-		inv.hasPython, inv.pyManifest = true, true
+		inv.pyManifest = true
 		inv.configs["python_lint"] = append(inv.configs["python_lint"], rel)
 	case isPythonManifest(base):
-		inv.hasPython, inv.pyManifest = true, true
+		inv.pyManifest = true
 		if base == "pyproject.toml" {
 			inv.configs["pyproject"] = append(inv.configs["pyproject"], rel)
 		}
 	case base == "mypy.ini" || base == ".mypy.ini" || base == "pyrightconfig.json":
-		inv.hasPython, inv.pyManifest = true, true
+		inv.pyManifest = true
 		inv.configs["python_type"] = append(inv.configs["python_type"], rel)
 	case base == ".shellcheckrc":
 		inv.configs["shell"] = append(inv.configs["shell"], rel)
@@ -387,14 +415,47 @@ func auditTSConfigFile(root, rel string) []DoctorFinding {
 			FixHint: `set linterOptions.reportUnusedDisableDirectives to "error"`,
 		})
 	}
-	if m := tsRuleWeakRe.FindString(text); m != "" {
+	if weak := findWeakTSCoreRule(text); weak != "" {
 		out = append(out, DoctorFinding{
 			Stack: "ts", ID: "ts-core-rule-weakened", Severity: "warning", File: rel,
-			Message: fmt.Sprintf("core correctness rule weakened (%s)", strings.TrimSpace(m)),
+			Message: fmt.Sprintf("core correctness rule weakened (%s)", weak),
 			FixHint: "enforce core TS/JS correctness rules at error severity (use diff-gated CI for legacy debt)",
 		})
 	}
 	return out
+}
+
+// findWeakTSCoreRule ignores bare JS rules turned off when their TS-scoped equivalent is set to error.
+func findWeakTSCoreRule(text string) string {
+	matches := tsRuleAssignRe.FindAllStringSubmatch(text, -1)
+	scopedErr := map[string]bool{}
+	for _, m := range matches {
+		name, sev := m[1], firstNonEmpty(m[2], m[3], m[4])
+		if base, ok := stripTSRulePrefix(name); ok && (sev == "error" || sev == "2") {
+			scopedErr[base] = true
+		}
+	}
+	for _, m := range matches {
+		name, sev := m[1], firstNonEmpty(m[2], m[3], m[4])
+		if sev == "error" || sev == "2" {
+			continue
+		}
+		if _, isScoped := stripTSRulePrefix(name); !isScoped && scopedErr[name] {
+			continue
+		}
+		return strings.TrimSpace(m[0])
+	}
+	return ""
+}
+
+func stripTSRulePrefix(name string) (string, bool) {
+	if rest, ok := strings.CutPrefix(name, "@typescript-eslint/"); ok {
+		return rest, true
+	}
+	if rest, ok := strings.CutPrefix(name, "typescript/"); ok {
+		return rest, true
+	}
+	return name, false
 }
 
 func hasTSReasonEnforcement(inv repoInventory) bool {
@@ -421,7 +482,6 @@ func anyStrictTSConfig(inv repoInventory) bool {
 }
 
 func auditGo(inv repoInventory) []DoctorFinding {
-	var out []DoctorFinding
 	if len(inv.configs["go"]) == 0 {
 		return []DoctorFinding{{
 			Stack: "go", ID: "go-missing-config", Severity: "error",
@@ -429,19 +489,30 @@ func auditGo(inv repoInventory) []DoctorFinding {
 			FixHint: "add a v2 .golangci.yml enabling errcheck, govet, staticcheck, ineffassign, gosec, errorlint, modernize, and nolintlint",
 		}}
 	}
-	rel := inv.configs["go"][0]
-	src, ok := readSmallFile(filepath.Join(inv.root, filepath.FromSlash(rel)))
-	if !ok {
-		return out
+	var out []DoctorFinding
+	for _, rel := range inv.configs["go"] {
+		out = append(out, auditGoConfigFile(inv.root, rel)...)
 	}
-	text := string(src)
-	disabled := parseGoDisabledLinters(text)
+	return out
+}
+
+func auditGoConfigFile(root, rel string) []DoctorFinding {
+	src, ok := readSmallFile(filepath.Join(root, filepath.FromSlash(rel)))
+	if !ok {
+		return nil
+	}
+	cleaned := stripHashComments(string(src))
+	disabled, enabled := parseGoLinterLists(cleaned)
+	defaultNone := goDefaultNoneRe.MatchString(cleaned)
+	defaultAll := goDefaultAllRe.MatchString(cleaned)
+
 	var missingCore []string
 	for _, name := range goCoreLinters {
-		if disabled[name] {
+		if disabled[name] || (defaultNone && !enabled[name]) {
 			missingCore = append(missingCore, name)
 		}
 	}
+	var out []DoctorFinding
 	if len(missingCore) > 0 {
 		out = append(out, DoctorFinding{
 			Stack: "go", ID: "go-disabled-core-linters", Severity: "error", File: rel,
@@ -449,8 +520,8 @@ func auditGo(inv repoInventory) []DoctorFinding {
 			FixHint: "re-enable core linters and gate CI with golangci-lint run --new-from-rev=origin/main",
 		})
 	}
-	hasDefaultAll := strings.Contains(text, "default: all") || strings.Contains(text, "enable-all: true")
-	if disabled["nolintlint"] || (!hasDefaultAll && !strings.Contains(text, "nolintlint")) {
+	nolintOn := (defaultAll && !disabled["nolintlint"]) || enabled["nolintlint"]
+	if !nolintOn {
 		out = append(out, DoctorFinding{
 			Stack: "go", ID: "go-missing-nolintlint", Severity: "warning", File: rel,
 			Message: "nolintlint is not enabled to require reasons on //nolint directives",
@@ -460,31 +531,55 @@ func auditGo(inv repoInventory) []DoctorFinding {
 	return out
 }
 
-func parseGoDisabledLinters(text string) map[string]bool {
-	out := map[string]bool{}
-	inDisable := false
-	disableIndent := 0
+func stripHashComments(text string) string {
+	var b strings.Builder
 	for line := range strings.SplitSeq(text, "\n") {
+		if idx := strings.IndexByte(line, '#'); idx >= 0 {
+			line = line[:idx]
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+func parseGoLinterLists(cleaned string) (disabled, enabled map[string]bool) {
+	disabled, enabled = map[string]bool{}, map[string]bool{}
+	for _, m := range goInlineListRe.FindAllStringSubmatch(cleaned, -1) {
+		target := enabled
+		if m[1] == "disable" {
+			target = disabled
+		}
+		for _, tok := range goIdentTokenRe.FindAllString(m[2], -1) {
+			target[tok] = true
+		}
+	}
+	var cur map[string]bool
+	curIndent := 0
+	for line := range strings.SplitSeq(cleaned, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+		if trimmed == "" {
 			continue
 		}
-		indent := len(line) - len(strings.TrimLeft(line, " "))
+		indent := len(line) - len(strings.TrimLeft(line, " \t"))
 		if trimmed == "disable:" {
-			inDisable = true
-			disableIndent = indent
+			cur, curIndent = disabled, indent
 			continue
 		}
-		if inDisable && indent <= disableIndent && !strings.HasPrefix(trimmed, "-") {
-			inDisable = false
+		if trimmed == "enable:" {
+			cur, curIndent = enabled, indent
+			continue
 		}
-		if inDisable {
-			if m := goDisableEntryRe.FindStringSubmatch(line); m != nil {
-				out[m[1]] = true
+		if cur != nil && indent <= curIndent && !strings.HasPrefix(trimmed, "-") {
+			cur = nil
+		}
+		if cur != nil {
+			if m := goListEntryRe.FindStringSubmatch(line); m != nil {
+				cur[m[1]] = true
 			}
 		}
 	}
-	return out
+	return disabled, enabled
 }
 
 func auditPython(inv repoInventory) []DoctorFinding {
@@ -494,22 +589,20 @@ func auditPython(inv repoInventory) []DoctorFinding {
 		out = append(out, DoctorFinding{
 			Stack: "python", ID: "py-missing-linter", Severity: "error",
 			Message: "no Ruff config found (ruff.toml or [tool.ruff] in pyproject.toml)",
-			FixHint: `add [tool.ruff.lint] with select = ["E", "F", "B", "SIM", "FURB", "UP", "RUF100"]`,
+			FixHint: `add ruff.toml with select = ["E", "F", "B", "SIM", "FURB", "UP", "RUF100"]`,
 		})
-	} else {
-		if pyRuffNeedsHardening(ruffText) {
-			out = append(out, DoctorFinding{
-				Stack: "python", ID: "py-ruff-weakened", Severity: "warning", File: ruffFile,
-				Message: "Ruff config misses bugbear/modernization rules (B, FURB/SIM/UP, RUF100) or ignores core checks",
-				FixHint: `select B, SIM, FURB, UP, RUF100 and avoid globally ignoring F841/F401/E722/ASYNC`,
-			})
-		}
+	} else if pyRuffNeedsHardening(ruffText) {
+		out = append(out, DoctorFinding{
+			Stack: "python", ID: "py-ruff-weakened", Severity: "warning", File: ruffFile,
+			Message: "Ruff config misses bugbear/modernization rules (B, FURB/SIM/UP, RUF100) or ignores core checks",
+			FixHint: `select B, SIM, FURB, UP, RUF100 and avoid globally ignoring F841/F401/E722/ASYNC`,
+		})
 	}
 	if !hasTypeCfg {
 		out = append(out, DoctorFinding{
 			Stack: "python", ID: "py-missing-typechecker", Severity: "warning",
 			Message: "no Python typechecker config found (mypy or pyright)",
-			FixHint: "add [tool.mypy] with strict = true or [tool.pyright] with typeCheckingMode = \"standard\"",
+			FixHint: `add mypy.ini with strict = true or pyrightconfig.json with typeCheckingMode = "standard"`,
 		})
 	} else if pyTypeWeakRe.MatchString(typeText) {
 		out = append(out, DoctorFinding{
@@ -554,7 +647,7 @@ func readPythonConfigs(inv repoInventory) (ruffFile, ruffText string, hasType bo
 }
 
 func pyRuffNeedsHardening(text string) bool {
-	if pyRuffWeakIgnRe.MatchString(extractTomlKeyBlock(text, "ignore")) {
+	if m := pyRuffIgnoreRe.FindStringSubmatch(text); m != nil && pyRuffWeakIgnRe.MatchString(m[1]) {
 		return true
 	}
 	m := pyRuffSelectRe.FindStringSubmatch(text)
@@ -565,19 +658,6 @@ func pyRuffNeedsHardening(text string) bool {
 	hasB := strings.Contains(sel, `"B"`) || strings.Contains(sel, `'B'`) || strings.Contains(sel, `"ALL"`)
 	hasMod := strings.Contains(sel, `"FURB"`) || strings.Contains(sel, `"UP"`) || strings.Contains(sel, `"SIM"`) || strings.Contains(sel, `"ALL"`)
 	return !hasB || !hasMod
-}
-
-func extractTomlKeyBlock(text, key string) string {
-	idx := strings.Index(text, key)
-	if idx < 0 {
-		return ""
-	}
-	rest := text[idx:]
-	end := strings.IndexByte(rest, ']')
-	if end < 0 {
-		return ""
-	}
-	return rest[:end+1]
 }
 
 func auditShell(inv repoInventory) []DoctorFinding {
@@ -644,24 +724,52 @@ func auditCI(inv repoInventory, stacks []string) []DoctorFinding {
 	return out
 }
 
+// hasContinueOnErrorLinter checks per YAML step block so an adjacent step's flag cannot bleed over.
 func hasContinueOnErrorLinter(text string) bool {
 	if !ciContinueErrRe.MatchString(text) {
 		return false
 	}
-	lines := strings.Split(text, "\n")
-	for i, ln := range lines {
-		if !ciContinueErrRe.MatchString(ln) {
+	for _, step := range splitWorkflowSteps(text) {
+		if !ciContinueErrRe.MatchString(step) {
 			continue
 		}
-		lo, hi := max(0, i-4), min(len(lines), i+3)
-		window := strings.Join(lines[lo:hi], "\n")
 		for _, re := range ciLinterCmdRe {
-			if re.MatchString(window) {
+			if re.MatchString(step) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+func splitWorkflowSteps(text string) []string {
+	var steps []string
+	var cur []string
+	stepIndent := -1
+	for line := range strings.SplitSeq(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		indent := len(line) - len(strings.TrimLeft(line, " \t"))
+		if strings.HasPrefix(trimmed, "- ") && (stepIndent < 0 || indent <= stepIndent) {
+			if len(cur) > 0 {
+				steps = append(steps, strings.Join(cur, "\n"))
+			}
+			cur = []string{line}
+			stepIndent = indent
+			continue
+		}
+		if stepIndent >= 0 && trimmed != "" && indent < stepIndent {
+			steps = append(steps, strings.Join(cur, "\n"))
+			cur, stepIndent = nil, -1
+			continue
+		}
+		if len(cur) > 0 {
+			cur = append(cur, line)
+		}
+	}
+	if len(cur) > 0 {
+		steps = append(steps, strings.Join(cur, "\n"))
+	}
+	return steps
 }
 
 // stripJSONComments removes // line comments and /* */ block comments for loose JSONC checks.

@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -28,6 +29,7 @@ type DoctorValidation struct {
 
 type DoctorFixResult struct {
 	Summary     string             `json:"summary"`
+	Cost        string             `json:"cost,omitempty"`
 	Planned     []string           `json:"planned,omitempty"`
 	Written     []string           `json:"written,omitempty"`
 	Validations []DoctorValidation `json:"validations,omitempty"`
@@ -43,26 +45,47 @@ Given a repository's detected stacks, doctor audit findings, and existing linter
 {"summary": "<1-sentence summary>", "files": [{"path": "<relative path>", "content": "<complete file content>"}]}
 
 Rules:
-1. Only emit linter/typechecker config files (e.g. .golangci.yml, eslint.config.mjs, .oxlintrc.json, biome.json, ruff.toml, pyproject.toml, tsconfig.json, pyrightconfig.json, mypy.ini, .shellcheckrc) and GitHub Actions workflows (.github/workflows/*.yml). NEVER modify application source code or package.json.
-2. Default to ratcheting / diff-gating in CI so strict rules enforce immediately on new/changed code without breaking legacy debt (e.g. golangci-lint run --new-from-rev=origin/main, ruff/eslint/oxlint/shellcheck on git diff changed files).
-3. Preserve all existing non-linter settings when updating files like pyproject.toml, tsconfig.json, or existing CI workflows.
-4. Enable correctness and anti-slop rules (errcheck, gosec, staticcheck, errorlint, modernize, nolintlint for Go; B, SIM, FURB, UP, RUF100 + strict mypy/pyright for Python; strict tsconfig, no-floating-promises, reportUnusedDisableDirectives, require-description for TS/JS; shellcheck for Shell). Never mask failures with || true or continue-on-error: true.
-5. In GitHub Actions workflows, compute changed files with plain git diff (never third-party changed-files actions) and read language versions from project manifests (e.g. go-version-file: go.mod).`
+1. Emit ONLY standalone linter/typechecker configs (.golangci.yml, eslint.config.mjs, .oxlintrc.json, biome.json, ruff.toml, mypy.ini, pyrightconfig.json, .shellcheckrc) and GitHub Actions workflows (.github/workflows/*.yml). NEVER emit shared project manifests (pyproject.toml, tsconfig.json, package.json, lintdec.yaml) or application source code.
+2. Put Python Ruff settings in ruff.toml and Mypy/Pyright settings in mypy.ini or pyrightconfig.json so existing pyproject.toml packaging metadata is never overwritten.
+3. Default to ratcheting / diff-gating in CI so strict rules enforce immediately on new/changed code without breaking legacy debt (e.g. golangci-lint run --new-from-rev=origin/main, ruff/eslint/oxlint/shellcheck on git diff changed files).
+4. Enable correctness and anti-slop rules (errcheck, gosec, staticcheck, errorlint, modernize, nolintlint for Go; B, SIM, FURB, UP, RUF100 + strict mypy/pyright for Python; no-floating-promises, reportUnusedDisableDirectives, require-description for TS/JS; shellcheck for Shell). Never mask failures with || true or continue-on-error: true.
+5. In GitHub Actions workflows, compute changed files with plain git diff (never third-party changed-files actions), never use pull_request_target or permissions: write-all, never pipe curl/wget into sh/bash, and read language versions from project manifests (e.g. go-version-file: go.mod).
+6. Do not rewrite any existing file that was marked omitted or truncated in the prompt.`
 
-var doctorExtraWritable = map[string]bool{
-	"tsconfig.json": true, "pyrightconfig.json": true, "mypy.ini": true, ".mypy.ini": true,
+// doctorSharedManifests carry build, dependency, or policy settings alongside lint config;
+// --fix refuses them so standalone files (ruff.toml, mypy.ini, etc.) are written instead.
+var doctorSharedManifests = map[string]bool{
+	"pyproject.toml": true, "lintdec.yaml": true, "lintdec.yml": true,
 }
 
-// isDoctorWritablePath restricts --fix writes strictly to linter/typechecker configs and CI workflows.
-func isDoctorWritablePath(rel string) bool {
+var doctorExtraWritable = map[string]bool{
+	"pyrightconfig.json": true, "mypy.ini": true, ".mypy.ini": true,
+}
+
+var (
+	unsafeWorkflowTargetRe = regexp.MustCompile(`(?i)\bpull_request_target\b`)
+	unsafeWorkflowPermRe   = regexp.MustCompile(`(?i)\bpermissions\s*:\s*write-all\b`)
+	unsafeWorkflowPipeRe   = regexp.MustCompile(`(?i)\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+)?(?:ba|da|z)?sh\b`)
+)
+
+func cleanSafeRelPath(rel string) (string, bool) {
 	if rel == "" || strings.HasPrefix(rel, "/") || strings.HasPrefix(rel, "\\") {
-		return false
+		return "", false
 	}
 	clean := path.Clean(strings.ReplaceAll(rel, "\\", "/"))
 	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || strings.Contains(clean, "/../") {
-		return false
+		return "", false
 	}
 	if strings.HasPrefix(clean, ".git/") || clean == ".git" {
+		return "", false
+	}
+	return clean, true
+}
+
+// isDoctorWritablePath restricts --fix writes strictly to standalone linter configs and CI workflows.
+func isDoctorWritablePath(rel string) bool {
+	clean, ok := cleanSafeRelPath(rel)
+	if !ok {
 		return false
 	}
 	if strings.HasPrefix(clean, ".github/workflows/") {
@@ -70,6 +93,9 @@ func isDoctorWritablePath(rel string) bool {
 		return strings.Count(clean, "/") == 2 && (strings.HasSuffix(low, ".yml") || strings.HasSuffix(low, ".yaml"))
 	}
 	base := strings.ToLower(path.Base(clean))
+	if doctorSharedManifests[base] || (strings.HasPrefix(base, "tsconfig") && strings.HasSuffix(base, ".json")) {
+		return false
+	}
 	return lintConfigNames[base] || doctorExtraWritable[base]
 }
 
@@ -129,30 +155,48 @@ func buildDoctorFixPrompt(root string, rep DoctorReport) string {
 	for _, f := range rep.Findings {
 		fmt.Fprintf(&sb, "- [%s] %s (%s): %s | hint: %s\n", f.Severity, f.ID, f.File, f.Message, f.FixHint)
 	}
+	existing := collectExistingConfigPaths(rep)
+	if len(existing) == 0 {
+		return sb.String()
+	}
+	sb.WriteString("\nEXISTING CONFIG AND WORKFLOW FILES:\n")
+	budget := 24000
+	var omitted []string
+	for _, rel := range existing {
+		b, ok := readSmallFile(filepath.Join(root, filepath.FromSlash(rel)))
+		if !ok {
+			continue
+		}
+		if budget <= 0 {
+			omitted = append(omitted, rel)
+			continue
+		}
+		if len(b) > budget {
+			fmt.Fprintf(&sb, "\n--- %s (truncated; do not rewrite whole file) ---\n%s\n... (truncated)\n", rel, string(b[:budget]))
+			budget = 0
+			continue
+		}
+		budget -= len(b)
+		fmt.Fprintf(&sb, "\n--- %s ---\n%s\n", rel, string(b))
+	}
+	if len(omitted) > 0 {
+		fmt.Fprintf(&sb, "\nOMITTED DUE TO BUDGET (do not rewrite): %s\n", strings.Join(omitted, ", "))
+	}
+	return sb.String()
+}
+
+func collectExistingConfigPaths(rep DoctorReport) []string {
 	var existing []string
 	for _, list := range rep.Configs {
 		existing = append(existing, list...)
 	}
 	existing = append(existing, rep.Workflows...)
 	slices.Sort(existing)
-	existing = slices.Compact(existing)
-	if len(existing) > 0 {
-		sb.WriteString("\nEXISTING CONFIG AND WORKFLOW FILES:\n")
-		budget := 24000
-		for _, rel := range existing {
-			b, ok := readSmallFile(filepath.Join(root, filepath.FromSlash(rel)))
-			if !ok || len(b) > budget {
-				continue
-			}
-			budget -= len(b)
-			fmt.Fprintf(&sb, "\n--- %s ---\n%s\n", rel, string(b))
-		}
-	}
-	return sb.String()
+	return slices.Compact(existing)
 }
 
 func applyDoctorFix(ctx context.Context, root string, rep DoctorReport, ep endpoint, temp float64, dryRun bool) (DoctorFixResult, error) {
-	raw, err := callDoctorChat(ctx, ep, temp, buildDoctorFixPrompt(root, rep))
+	raw, costStr, err := callDoctorChat(ctx, ep, temp, buildDoctorFixPrompt(root, rep))
 	if err != nil {
 		return DoctorFixResult{}, err
 	}
@@ -160,18 +204,14 @@ func applyDoctorFix(ctx context.Context, root string, rep DoctorReport, ep endpo
 	if err != nil {
 		return DoctorFixResult{}, err
 	}
-	for _, f := range plan.Files {
-		if !isDoctorWritablePath(f.Path) {
-			return DoctorFixResult{}, fmt.Errorf("doctor --fix refused path %q: not allowed (only linter/typechecker configs and CI workflows may be modified)", f.Path)
-		}
-		if strings.TrimSpace(f.Content) == "" {
-			return DoctorFixResult{}, fmt.Errorf("doctor --fix refused empty content for %q", f.Path)
-		}
+	validations, err := preValidateDoctorPlan(root, plan.Files)
+	if err != nil {
+		return DoctorFixResult{}, err
 	}
-	res := DoctorFixResult{Summary: plan.Summary}
+	res := DoctorFixResult{Summary: plan.Summary, Cost: costStr, Validations: validations}
 	if dryRun {
 		for _, f := range plan.Files {
-			res.Planned = append(res.Planned, f.Path)
+			res.Planned = append(res.Planned, path.Clean(strings.ReplaceAll(f.Path, "\\", "/")))
 		}
 		return res, nil
 	}
@@ -185,18 +225,32 @@ func applyDoctorFix(ctx context.Context, root string, rep DoctorReport, ep endpo
 			return res, err
 		}
 		res.Written = append(res.Written, clean)
-		status, verr := validateDoctorFile(root, clean)
-		if verr != nil {
-			status = "warn: " + verr.Error()
-		}
-		if status != "" {
-			res.Validations = append(res.Validations, DoctorValidation{Path: clean, Status: status})
-		}
 	}
 	return res, nil
 }
 
-func callDoctorChat(ctx context.Context, ep endpoint, temp float64, userPrompt string) (string, error) {
+func preValidateDoctorPlan(root string, files []DoctorFixFile) ([]DoctorValidation, error) {
+	var validations []DoctorValidation
+	for _, f := range files {
+		if !isDoctorWritablePath(f.Path) {
+			return nil, fmt.Errorf("doctor --fix refused path %q: not allowed (only standalone linter/typechecker configs and CI workflows may be modified)", f.Path)
+		}
+		if strings.TrimSpace(f.Content) == "" {
+			return nil, fmt.Errorf("doctor --fix refused empty content for %q", f.Path)
+		}
+		clean := path.Clean(strings.ReplaceAll(f.Path, "\\", "/"))
+		status, err := validateDoctorContent(root, clean, []byte(f.Content))
+		if err != nil {
+			return nil, fmt.Errorf("doctor --fix validation failed for %q (no files written): %w", clean, err)
+		}
+		if status != "" {
+			validations = append(validations, DoctorValidation{Path: clean, Status: status})
+		}
+	}
+	return validations, nil
+}
+
+func callDoctorChat(ctx context.Context, ep endpoint, temp float64, userPrompt string) (string, string, error) {
 	body := map[string]any{
 		"model": ep.Model, "temperature": temp, "max_tokens": 8192,
 		"chat_template_kwargs": map[string]any{"enable_thinking": false},
@@ -206,25 +260,38 @@ func callDoctorChat(ctx context.Context, ep endpoint, temp float64, userPrompt s
 		},
 	}
 	payload, _ := json.Marshal(body)
-	req, err := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(ep.BaseURL, "/")+"/chat/completions", bytes.NewReader(payload))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if err := authorizeRequest(req, ep.source, ep.APIKey); err != nil {
-		return "", err
-	}
+	url := strings.TrimRight(ep.BaseURL, "/") + "/chat/completions"
 	httpc := &http.Client{Timeout: 180 * time.Second}
-	res, err := sendRequest(httpc, req, ep.source != nil || ep.APIKey != "")
-	if err != nil {
-		return "", err
+	var costs costAccumulator
+	for attempt := range 3 {
+		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(payload))
+		if err != nil {
+			return "", "", err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		res, err := authorizedDo(httpc, req, ep.source, ep.APIKey)
+		if err != nil {
+			return "", "", err
+		}
+		if (res.StatusCode == http.StatusTooManyRequests || res.StatusCode >= 500) && attempt < 2 {
+			res.Body.Close()
+			select {
+			case <-ctx.Done():
+				return "", "", ctx.Err()
+			case <-time.After(time.Duration(attempt+1) * time.Second):
+			}
+			continue
+		}
+		defer res.Body.Close()
+		if res.StatusCode < 200 || res.StatusCode >= 300 {
+			return "", "", errors.New(responseError(res, ep.source, ep.APIKey))
+		}
+		var usage *chatUsage
+		text, err := decodeCompletion(res.Body, &usage)
+		costs.recordChat(usage, ep.Auth != "" || ep.BaseURL == "https://openrouter.ai/api/v1")
+		return text, formatCost(costs.snapshot()), err
 	}
-	defer res.Body.Close()
-	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return "", errors.New(responseError(res, ep.source, ep.APIKey))
-	}
-	var usage *chatUsage
-	return decodeCompletion(res.Body, &usage)
+	return "", "", errors.New("doctor --fix: chat request failed after retries")
 }
 
 func parseDoctorFixPlan(raw string) (doctorFixPlan, error) {
@@ -240,44 +307,67 @@ func parseDoctorFixPlan(raw string) (doctorFixPlan, error) {
 	return doctorFixPlan{}, errors.New("doctor --fix: model response did not contain a valid JSON file plan")
 }
 
-// validateDoctorFile checks syntax/schema of a written config file; injectable for tests.
-var validateDoctorFile = defaultValidateDoctorFile
+// validateDoctorContent validates candidate config bytes before writing; injectable for tests.
+var validateDoctorContent = defaultValidateDoctorContent
 
-func defaultValidateDoctorFile(root, rel string) (string, error) {
-	full := filepath.Join(root, filepath.FromSlash(rel))
+func defaultValidateDoctorContent(root, rel string, content []byte) (string, error) {
 	base := strings.ToLower(path.Base(rel))
+	if strings.HasPrefix(rel, ".github/workflows/") {
+		return validateWorkflowContent(content)
+	}
 	switch {
-	case strings.HasSuffix(base, ".json"):
-		b, err := os.ReadFile(full)
-		if err != nil {
-			return "", err
-		}
-		if !json.Valid(stripJSONComments(b)) {
+	case strings.HasSuffix(base, ".json") || strings.HasSuffix(base, ".jsonc"):
+		if !json.Valid(stripJSONComments(content)) {
 			return "", errors.New("invalid JSON syntax")
 		}
 		return "json valid", nil
 	case strings.HasPrefix(base, ".golangci."):
-		if _, err := exec.LookPath("golangci-lint"); err != nil {
-			return "skipped (golangci-lint not installed)", nil
-		}
-		cmd := exec.Command("golangci-lint", "config", "verify", "--config", full)
-		cmd.Dir = root
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			return "", fmt.Errorf("golangci-lint config verify: %s", strings.TrimSpace(string(out)))
-		}
-		return "golangci-lint config verify ok", nil
+		return validateWithTempFile(root, base, content, "golangci-lint", func(tmp string) []string {
+			return []string{"config", "verify", "--config", tmp}
+		})
 	case base == "eslint.config.js" || base == "eslint.config.mjs" || base == "eslint.config.cjs":
-		if _, err := exec.LookPath("node"); err != nil {
-			return "skipped (node not installed)", nil
-		}
-		cmd := exec.Command("node", "--check", full)
-		cmd.Dir = root
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			return "", fmt.Errorf("node --check: %s", strings.TrimSpace(string(out)))
-		}
-		return "node --check ok", nil
+		return validateWithTempFile(root, base, content, "node", func(tmp string) []string {
+			return []string{"--check", tmp}
+		})
 	}
 	return "", nil
+}
+
+func validateWorkflowContent(content []byte) (string, error) {
+	text := string(content)
+	if unsafeWorkflowTargetRe.MatchString(text) {
+		return "", errors.New("unsafe workflow trigger pull_request_target refused")
+	}
+	if unsafeWorkflowPermRe.MatchString(text) {
+		return "", errors.New("unsafe workflow permissions: write-all refused")
+	}
+	if unsafeWorkflowPipeRe.MatchString(text) {
+		return "", errors.New("unsafe remote script pipe (curl/wget | sh) refused")
+	}
+	if !strings.Contains(text, "jobs:") {
+		return "", errors.New("workflow missing jobs: section")
+	}
+	return "workflow guard ok", nil
+}
+
+func validateWithTempFile(root, base string, content []byte, bin string, argsFn func(string) []string) (string, error) {
+	if _, err := exec.LookPath(bin); err != nil {
+		return fmt.Sprintf("skipped (%s not installed)", bin), nil
+	}
+	tmpDir, err := os.MkdirTemp("", "lintdec-doctor-*")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(tmpDir)
+	tmpFile := filepath.Join(tmpDir, base)
+	if err := os.WriteFile(tmpFile, content, 0o600); err != nil {
+		return "", err
+	}
+	cmd := exec.Command(bin, argsFn(tmpFile)...)
+	cmd.Dir = root
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("%s failed: %s", bin, strings.TrimSpace(string(out)))
+	}
+	return bin + " ok", nil
 }
