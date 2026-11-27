@@ -40,10 +40,13 @@ func TestRuleEligibleDeterministicFilters(t *testing.T) {
 		{"md-blames-reader", Unit{Kind: "Paragraph", Text: "You can run the CLI with --help to list commands."}, false},
 		{"md-blames-reader", Unit{Kind: "Paragraph", Text: "You passed an invalid flag."}, true},
 		{"md-blames-reader", Unit{Kind: "Paragraph", Text: "You forgot to set the token before starting."}, true},
+		{"md-blames-reader", Unit{Kind: "Paragraph", Text: "You didn’t configure the host."}, true},
+		{"md-blames-reader", Unit{Kind: "Paragraph", Text: "You should\nhave set the token."}, true},
 
 		{"md-one-sided-alternatives", Unit{Kind: "Document", Text: "# Guide\n\nRun the command."}, false},
 		{"md-one-sided-alternatives", Unit{Kind: "Document", File: "README.md", Text: "# CLI\n\nUse --json instead of --text for scripting options."}, false},
 		{"md-one-sided-alternatives", Unit{Kind: "Document", Text: "# ADR\n\n## Alternatives considered\n\nSQLite."}, true},
+		{"md-one-sided-alternatives", Unit{Kind: "Document", File: "docs/notes.md", Text: "# Cache\n\n  #### Alternatives considered\n\nSQLite."}, true},
 		{"md-one-sided-alternatives", Unit{Kind: "Document", File: "docs/rfc-004.md", Text: "# Cache\n\nWe chose LRU instead of LFU."}, true},
 
 		{"md-adr-no-cost", Unit{Kind: "Document", File: "README.md", Text: "# App\n\n## Install\n\nRun it."}, false},
@@ -64,6 +67,9 @@ func TestRuleEligibleDeterministicFilters(t *testing.T) {
 
 		{"test-over-mocked", Unit{Kind: "TestFunction", Text: "it('x', () => { const f = vi.fn(); expect(run(f)).toBe(2); })"}, false},
 		{"test-over-mocked", Unit{Kind: "TestFunction", Text: "it('x', () => { const f = vi.fn(); run(f); expect(f).toHaveBeenCalled(); })"}, true},
+		{"test-over-mocked", Unit{Kind: "TestFunction", Text: "it('x', () => { const f = vi.fn(); run(f); expect(f).toHaveBeenLastCalledWith('a'); })"}, true},
+		{"test-over-mocked", Unit{Kind: "TestFunction", Text: "func TestGet(t *testing.T) { ctrl := gomock.NewController(t); m.EXPECT().Get(gomock.Any()).Return(\"v\", nil) }"}, true},
+		{"test-over-mocked", Unit{Kind: "TestFunction", Text: "def test_x():\n    m = MagicMock()\n    m.assert_not_called()"}, true},
 		{"test-over-mocked", Unit{Kind: "TestFunction", Text: "it('x', () => { const a = vi.fn(); const b = vi.fn(); const c = vi.spyOn(o, 'm'); })"}, true},
 		{"test-over-mocked", Unit{Kind: "TestFunction", Text: "it('x', () => { expect(1+1).toBe(2); })"}, false},
 
