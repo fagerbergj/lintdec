@@ -286,37 +286,39 @@ func classifyDoctorFile(inv *repoInventory, abs, rel string) {
 	}
 }
 
+func isTSLinterConfig(base string) bool {
+	return strings.HasPrefix(base, "eslint.config.") || strings.HasPrefix(base, ".eslintrc") ||
+		strings.HasPrefix(base, ".oxlintrc.") || strings.HasPrefix(base, "oxlint.config.") ||
+		base == "biome.json" || base == "biome.jsonc"
+}
+
+func isPythonManifest(base string) bool {
+	return base == "pyproject.toml" || base == "setup.py" || base == "setup.cfg" || strings.HasPrefix(base, "requirements")
+}
+
 func recordDoctorConfig(inv *repoInventory, base, rel string) {
 	switch {
 	case base == "package.json":
-		inv.hasJS = true
-		inv.tsManifest = true
+		inv.hasJS, inv.tsManifest = true, true
 	case strings.HasPrefix(base, "tsconfig") && strings.HasSuffix(base, ".json"):
-		inv.hasTS = true
-		inv.tsManifest = true
+		inv.hasTS, inv.tsManifest = true, true
 		inv.configs["tsconfig"] = append(inv.configs["tsconfig"], rel)
-	case strings.HasPrefix(base, "eslint.config.") || strings.HasPrefix(base, ".eslintrc") ||
-		strings.HasPrefix(base, ".oxlintrc.") || strings.HasPrefix(base, "oxlint.config.") ||
-		base == "biome.json" || base == "biome.jsonc":
+	case isTSLinterConfig(base):
 		inv.configs["ts"] = append(inv.configs["ts"], rel)
 	case base == "go.mod":
-		inv.hasGo = true
-		inv.goManifest = true
+		inv.hasGo, inv.goManifest = true, true
 	case strings.HasPrefix(base, ".golangci."):
 		inv.configs["go"] = append(inv.configs["go"], rel)
 	case base == "ruff.toml" || base == ".ruff.toml":
-		inv.hasPython = true
-		inv.pyManifest = true
+		inv.hasPython, inv.pyManifest = true, true
 		inv.configs["python_lint"] = append(inv.configs["python_lint"], rel)
-	case base == "pyproject.toml" || base == "setup.py" || base == "setup.cfg" || strings.HasPrefix(base, "requirements"):
-		inv.hasPython = true
-		inv.pyManifest = true
+	case isPythonManifest(base):
+		inv.hasPython, inv.pyManifest = true, true
 		if base == "pyproject.toml" {
 			inv.configs["pyproject"] = append(inv.configs["pyproject"], rel)
 		}
 	case base == "mypy.ini" || base == ".mypy.ini" || base == "pyrightconfig.json":
-		inv.hasPython = true
-		inv.pyManifest = true
+		inv.hasPython, inv.pyManifest = true, true
 		inv.configs["python_type"] = append(inv.configs["python_type"], rel)
 	case base == ".shellcheckrc":
 		inv.configs["shell"] = append(inv.configs["shell"], rel)
@@ -359,45 +361,52 @@ func auditTS(inv repoInventory) []DoctorFinding {
 		})
 	}
 	for _, rel := range inv.configs["ts"] {
-		src, ok := readSmallFile(filepath.Join(inv.root, filepath.FromSlash(rel)))
-		if !ok {
-			continue
-		}
-		text := string(src)
-		if tsUnusedOffRe.MatchString(text) {
-			out = append(out, DoctorFinding{
-				Stack: "ts", ID: "ts-unused-disables-off", Severity: "warning", File: rel,
-				Message: "reportUnusedDisableDirectives is disabled, allowing stale suppressions to accumulate",
-				FixHint: `set linterOptions.reportUnusedDisableDirectives to "error"`,
-			})
-		}
-		if m := tsRuleWeakRe.FindString(text); m != "" {
-			out = append(out, DoctorFinding{
-				Stack: "ts", ID: "ts-core-rule-weakened", Severity: "warning", File: rel,
-				Message: fmt.Sprintf("core correctness rule weakened (%s)", strings.TrimSpace(m)),
-				FixHint: "enforce core TS/JS correctness rules at error severity (use diff-gated CI for legacy debt)",
-			})
-		}
+		out = append(out, auditTSConfigFile(inv.root, rel)...)
 	}
-	if inv.suppressions["ts"] >= 5 && len(inv.configs["ts"]) > 0 {
-		hasReasonRule := false
-		for _, rel := range inv.configs["ts"] {
-			if src, ok := readSmallFile(filepath.Join(inv.root, filepath.FromSlash(rel))); ok {
-				s := string(src)
-				if strings.Contains(s, "require-description") || strings.Contains(s, "reportUnusedDisableDirectives") {
-					hasReasonRule = true
-				}
-			}
-		}
-		if !hasReasonRule {
-			out = append(out, DoctorFinding{
-				Stack: "ts", ID: "ts-suppression-hygiene", Severity: "warning", File: inv.configs["ts"][0],
-				Message: fmt.Sprintf("%d inline TS/JS suppressions found without require-description or unused-disable enforcement", inv.suppressions["ts"]),
-				FixHint: "enable eslint-comments/require-description and reportUnusedDisableDirectives",
-			})
-		}
+	if inv.suppressions["ts"] >= 5 && len(inv.configs["ts"]) > 0 && !hasTSReasonEnforcement(inv) {
+		out = append(out, DoctorFinding{
+			Stack: "ts", ID: "ts-suppression-hygiene", Severity: "warning", File: inv.configs["ts"][0],
+			Message: fmt.Sprintf("%d inline TS/JS suppressions found without require-description or unused-disable enforcement", inv.suppressions["ts"]),
+			FixHint: "enable eslint-comments/require-description and reportUnusedDisableDirectives",
+		})
 	}
 	return out
+}
+
+func auditTSConfigFile(root, rel string) []DoctorFinding {
+	src, ok := readSmallFile(filepath.Join(root, filepath.FromSlash(rel)))
+	if !ok {
+		return nil
+	}
+	text := string(src)
+	var out []DoctorFinding
+	if tsUnusedOffRe.MatchString(text) {
+		out = append(out, DoctorFinding{
+			Stack: "ts", ID: "ts-unused-disables-off", Severity: "warning", File: rel,
+			Message: "reportUnusedDisableDirectives is disabled, allowing stale suppressions to accumulate",
+			FixHint: `set linterOptions.reportUnusedDisableDirectives to "error"`,
+		})
+	}
+	if m := tsRuleWeakRe.FindString(text); m != "" {
+		out = append(out, DoctorFinding{
+			Stack: "ts", ID: "ts-core-rule-weakened", Severity: "warning", File: rel,
+			Message: fmt.Sprintf("core correctness rule weakened (%s)", strings.TrimSpace(m)),
+			FixHint: "enforce core TS/JS correctness rules at error severity (use diff-gated CI for legacy debt)",
+		})
+	}
+	return out
+}
+
+func hasTSReasonEnforcement(inv repoInventory) bool {
+	for _, rel := range inv.configs["ts"] {
+		if src, ok := readSmallFile(filepath.Join(inv.root, filepath.FromSlash(rel))); ok {
+			s := string(src)
+			if strings.Contains(s, "require-description") || strings.Contains(s, "reportUnusedDisableDirectives") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func anyStrictTSConfig(inv repoInventory) bool {
@@ -658,43 +667,57 @@ func hasContinueOnErrorLinter(text string) bool {
 // stripJSONComments removes // line comments and /* */ block comments for loose JSONC checks.
 func stripJSONComments(src []byte) []byte {
 	var out []byte
-	inStr := false
 	for i := 0; i < len(src); i++ {
-		if inStr {
-			out = append(out, src[i])
-			if src[i] == '\\' && i+1 < len(src) {
-				i++
-				out = append(out, src[i])
-			} else if src[i] == '"' {
-				inStr = false
-			}
-			continue
-		}
 		if src[i] == '"' {
-			inStr = true
-			out = append(out, src[i])
+			end := scanJSONString(src, i)
+			out = append(out, src[i:end]...)
+			i = end - 1
 			continue
 		}
-		if i+1 < len(src) && src[i] == '/' && src[i+1] == '/' {
-			for i < len(src) && src[i] != '\n' {
-				i++
-			}
-			if i < len(src) {
+		if next, ok := skipJSONComment(src, i); ok {
+			if src[i+1] == '/' && next < len(src) {
 				out = append(out, '\n')
 			}
-			continue
-		}
-		if i+1 < len(src) && src[i] == '/' && src[i+1] == '*' {
-			i += 2
-			for i+1 < len(src) && !(src[i] == '*' && src[i+1] == '/') {
-				i++
-			}
-			i++
+			i = next
 			continue
 		}
 		out = append(out, src[i])
 	}
 	return out
+}
+
+func scanJSONString(src []byte, start int) int {
+	for i := start + 1; i < len(src); i++ {
+		if src[i] == '\\' {
+			i++
+			continue
+		}
+		if src[i] == '"' {
+			return i + 1
+		}
+	}
+	return len(src)
+}
+
+func skipJSONComment(src []byte, i int) (int, bool) {
+	if i+1 >= len(src) || src[i] != '/' {
+		return i, false
+	}
+	if src[i+1] == '/' {
+		j := i + 2
+		for j < len(src) && src[j] != '\n' {
+			j++
+		}
+		return j, true
+	}
+	if src[i+1] == '*' {
+		j := i + 2
+		for j+1 < len(src) && !(src[j] == '*' && src[j+1] == '/') {
+			j++
+		}
+		return j + 1, true
+	}
+	return i, false
 }
 
 func writeDoctorReport(w io.Writer, rep DoctorReport, format string) {
