@@ -43,6 +43,17 @@ Jev provides confidence, not a specific explanation or line: lintdec shows the r
 
 Use `lintdec --list-rules` to see rules, `lintdec --rules flakey-test,md-prose-list .` to run only those two, and `lintdec -h` for options. To suppress a finding, put `//lintdec:ignore flakey-test` (or `<!-- lintdec:ignore md-prose-list -->` in Markdown) within two lines above it; use `--no-ignore` to audit suppressions.
 
+## Doctor (deterministic linter setup & audit)
+
+```sh
+lintdec doctor .
+lintdec doctor --exclude 'vendor/**' .
+lintdec doctor --fix .          # writes hardened configs & diff-gated CI using a chat LLM
+lintdec doctor --fix --dry-run .
+```
+
+`lintdec doctor` runs locally with zero model calls to audit TS/JS (ESLint/Oxlint/Biome + `tsconfig`), Go (`golangci-lint`), Python (Ruff + Mypy/Pyright), Shell (`shellcheck`), suppression hygiene, and GitHub Actions CI wiring (honoring `--exclude` and `lintdec.yaml` excludes). Standalone configs under `docs/`, `examples/`, `example/`, `testdata/`, or `fixtures/` are ignored as fixtures unless that subtree declares its own stack manifest (`package.json`, `go.mod`, `pyproject.toml`, etc.) and contains source files for that stack. With `--fix`, it uses a configured chat (`openai`-protocol) model to generate or harden standalone linter/typechecker configs and diff-gated `.github/workflows/*.y*ml` directly on disk after pre-write validation, refusing shared manifests such as `pyproject.toml`, `tsconfig*.json`, and `lintdec.yaml`.
+
 ## Project policy: lintdec.yaml
 
 Commit a `lintdec.yaml` to the repository; lintdec finds it from the linted paths' common ancestor. `on:` adds a rule to the default set and `off:` removes one; `lintdec --list-rules` marks which rules are on by default.

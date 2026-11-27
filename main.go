@@ -17,6 +17,9 @@ func main() {
 	if len(args) > 0 && (args[0] == "model" || args[0] == "models") {
 		os.Exit(modelCmd(args[1:]))
 	}
+	if len(args) > 0 && args[0] == "doctor" {
+		os.Exit(doctorCmd(args[1:]))
+	}
 	if len(args) > 0 && args[0] == "lint" {
 		args = args[1:]
 	}
@@ -60,6 +63,7 @@ func usage() {
 
 Usage:
   lintdec [flags] <path>...        lint files, dirs, or glob patterns (default: .)
+  lintdec doctor [flags] [path]    audit deterministic linters & CI (--fix with a chat LLM)
   lintdec provider                 choose or add a provider
   lintdec provider [list|add|use|rm|test] ...
   lintdec model                    choose a model
