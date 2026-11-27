@@ -49,7 +49,7 @@ Rules:
 2. Put Python Ruff settings in ruff.toml and Mypy/Pyright settings in mypy.ini or pyrightconfig.json so existing pyproject.toml packaging metadata is never overwritten.
 3. Default to ratcheting / diff-gating in CI so strict rules enforce immediately on new/changed code without breaking legacy debt (e.g. golangci-lint run --new-from-rev=origin/main, ruff/eslint/oxlint/shellcheck on git diff changed files).
 4. Enable correctness and anti-slop rules (errcheck, gosec, staticcheck, errorlint, modernize, nolintlint for Go; B, SIM, FURB, UP, RUF100 + strict mypy/pyright for Python; no-floating-promises, reportUnusedDisableDirectives, require-description for TS/JS; shellcheck for Shell). Never mask failures with || true or continue-on-error: true.
-5. In GitHub Actions workflows, compute changed files with plain git diff (never third-party changed-files actions), never use pull_request_target or permissions: write-all, never pipe curl/wget into sh/bash, and read language versions from project manifests (e.g. go-version-file: go.mod).
+5. In GitHub Actions workflows, compute changed files with plain git diff (never third-party changed-files actions), prefer official setup/linter actions (e.g. golangci/golangci-lint-action) over curl/wget | sh, never use pull_request_target or permissions: write-all, and read language versions from project manifests (e.g. go-version-file: go.mod).
 6. Do not rewrite any existing file that was marked omitted or truncated in the prompt.`
 
 // doctorSharedManifests carry build, dependency, or policy settings alongside lint config;
@@ -239,6 +239,9 @@ func preValidateDoctorPlan(root string, files []DoctorFixFile) ([]DoctorValidati
 			return nil, fmt.Errorf("doctor --fix refused empty content for %q", f.Path)
 		}
 		clean := path.Clean(strings.ReplaceAll(f.Path, "\\", "/"))
+		if err := verifyContainment(root, clean); err != nil {
+			return nil, fmt.Errorf("doctor --fix refused path %q: %w", clean, err)
+		}
 		status, err := validateDoctorContent(root, clean, []byte(f.Content))
 		if err != nil {
 			return nil, fmt.Errorf("doctor --fix validation failed for %q (no files written): %w", clean, err)
@@ -248,6 +251,36 @@ func preValidateDoctorPlan(root string, files []DoctorFixFile) ([]DoctorValidati
 		}
 	}
 	return validations, nil
+}
+
+// verifyContainment rejects symlink targets or symlinked parent dirs that resolve outside root.
+func verifyContainment(root, clean string) error {
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	realRoot, err := filepath.EvalSymlinks(absRoot)
+	if err != nil {
+		return err
+	}
+	for probe := filepath.Join(absRoot, filepath.FromSlash(clean)); ; {
+		if _, err := os.Lstat(probe); err == nil {
+			resolved, err := filepath.EvalSymlinks(probe)
+			if err != nil {
+				return err
+			}
+			rel, err := filepath.Rel(realRoot, resolved)
+			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				return errors.New("path resolves outside repository root via symlink")
+			}
+			return nil
+		}
+		parent := filepath.Dir(probe)
+		if parent == probe {
+			return nil
+		}
+		probe = parent
+	}
 }
 
 func callDoctorChat(ctx context.Context, ep endpoint, temp float64, userPrompt string) (string, string, error) {
@@ -263,7 +296,7 @@ func callDoctorChat(ctx context.Context, ep endpoint, temp float64, userPrompt s
 	url := strings.TrimRight(ep.BaseURL, "/") + "/chat/completions"
 	httpc := &http.Client{Timeout: 180 * time.Second}
 	var costs costAccumulator
-	for attempt := range 3 {
+	for attempt := 0; ; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(payload))
 		if err != nil {
 			return "", "", err
@@ -288,10 +321,9 @@ func callDoctorChat(ctx context.Context, ep endpoint, temp float64, userPrompt s
 		}
 		var usage *chatUsage
 		text, err := decodeCompletion(res.Body, &usage)
-		costs.recordChat(usage, ep.Auth != "" || ep.BaseURL == "https://openrouter.ai/api/v1")
+		costs.recordChat(usage, reportsProviderCost(ep.BaseURL))
 		return text, formatCost(costs.snapshot()), err
 	}
-	return "", "", errors.New("doctor --fix: chat request failed after retries")
 }
 
 func parseDoctorFixPlan(raw string) (doctorFixPlan, error) {
@@ -333,6 +365,8 @@ func defaultValidateDoctorContent(root, rel string, content []byte) (string, err
 	return "", nil
 }
 
+// validateWorkflowContent is a guardrail against common workflow footguns, not a security sandbox;
+// review generated workflows with git diff before committing.
 func validateWorkflowContent(content []byte) (string, error) {
 	text := string(content)
 	if unsafeWorkflowTargetRe.MatchString(text) {

@@ -482,3 +482,103 @@ func TestDoctorFixPreWriteValidationAndSafety(t *testing.T) {
 		})
 	}
 }
+
+func TestDoctorRound2Fixes(t *testing.T) {
+	// 1. Go v2 default:none + presets:[bugs, style] is NOT flagged as go-disabled-core-linters,
+	//    and unused-imports/no-unused-vars: 'off' does NOT match bare no-unused-vars.
+	dir := t.TempDir()
+	writeTestFiles(t, dir, map[string]string{
+		"go.mod":  "module example.com/presets\n",
+		"main.go": "package main\nfunc main() {}\n",
+		".golangci.yml": `version: "2"
+linters:
+  default: none
+  presets:
+    - bugs
+    - style
+  enable:
+    - nolintlint
+`,
+		"package.json":      `{"name":"ui"}`,
+		"tsconfig.json":     `{"compilerOptions":{"strict":true}}`,
+		"eslint.config.mjs": `export default [{ rules: { 'unused-imports/no-unused-vars': 'off', 'import/no-unused-vars': 'off' } }];`,
+		"src/app.ts":        "export const x = 1;\n",
+		".github/workflows/ci.yml": `jobs:
+  lint:
+    steps:
+      - run: golangci-lint run
+      - run: npm run lint
+  optional-release:
+    continue-on-error: true
+    steps:
+      - run: echo publish
+`,
+	})
+	rep, err := runDoctorAudit(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Findings) != 0 {
+		t.Fatalf("expected 0 findings with presets/plugin-rule/non-linter-job, got: %+v", rep.Findings)
+	}
+
+	// 2. Example/fixture configs do not mask missing project linter configs, and job-level
+	//    continue-on-error: true on a linter job IS caught as ci-linter-neutered.
+	exDir := t.TempDir()
+	writeTestFiles(t, exDir, map[string]string{
+		"go.mod":                           "module example.com/ex\n",
+		"main.go":                          "package main\nfunc main() {}\n",
+		"docs/examples/deep/.golangci.yml": "version: \"2\"\nlinters:\n  default: all\n",
+		".github/workflows/ci.yml": `jobs:
+  lint:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - run: golangci-lint run
+`,
+	})
+	exRep, err := runDoctorAudit(exDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exIDs := findingIDs(exRep)
+	if !exIDs["go-missing-config"] {
+		t.Fatalf("expected docs/examples/.golangci.yml to be ignored; got %+v", exRep.Findings)
+	}
+	if !exIDs["ci-linter-neutered"] {
+		t.Fatalf("expected job-level continue-on-error on lint job to trigger ci-linter-neutered; got %+v", exRep.Findings)
+	}
+
+	// 3. Basename exclude glob matches nested paths consistently with matchAnyGlob.
+	exFiltered, err := runDoctorAuditWithExclude(exDir, []string{"*.yml"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(exFiltered.Workflows) != 0 {
+		t.Fatalf("expected basename *.yml exclude to filter workflows, got %+v", exFiltered.Workflows)
+	}
+}
+
+func TestDoctorFixRefusesSymlinkEscape(t *testing.T) {
+	outside := t.TempDir()
+	root := t.TempDir()
+	writeTestFiles(t, root, map[string]string{
+		"go.mod":  "module example.com/sym\n",
+		"main.go": "package main\nfunc main() {}\n",
+	})
+	if err := os.Symlink(outside, filepath.Join(root, "escape")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "dangling.toml"), filepath.Join(root, "ruff.toml")); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyContainment(root, "escape/ruff.toml"); err == nil {
+		t.Fatal("expected symlinked parent directory escape to be refused")
+	}
+	if err := verifyContainment(root, "ruff.toml"); err == nil {
+		t.Fatal("expected dangling symlink target escape to be refused")
+	}
+	if err := verifyContainment(root, ".golangci.yml"); err != nil {
+		t.Fatalf("expected normal root file to pass containment: %v", err)
+	}
+}

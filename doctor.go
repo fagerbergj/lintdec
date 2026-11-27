@@ -70,12 +70,13 @@ var (
 	doctorSuppShRe   = regexp.MustCompile(`(?i)#\s*shellcheck\s+disable=`)
 	tsStrictTrueRe   = regexp.MustCompile(`"strict"\s*:\s*true\b`)
 	tsUnusedOffRe    = regexp.MustCompile(`reportUnusedDisableDirectives\s*[:=]\s*(?:['"]off['"]|false)`)
-	tsRuleAssignRe   = regexp.MustCompile(`(?m)['"]?((?:@typescript-eslint/|typescript/)?(?:no-floating-promises|no-misused-promises|no-explicit-any|no-unused-vars|no-empty))['"]?\s*:\s*(?:['"](off|warn|error)['"]|([012])\b|\[\s*['"](off|warn|error)['"])`)
+	tsRuleAssignRe   = regexp.MustCompile(`(?m)(?:^|[\s,{])['"]?((?:@typescript-eslint/|typescript/)?(?:no-floating-promises|no-misused-promises|no-explicit-any|no-unused-vars|no-empty))['"]?\s*:\s*(?:['"](off|warn|error)['"]|([012])\b|\[\s*['"](off|warn|error)['"])`)
 	goCoreLinters    = []string{"errcheck", "govet", "staticcheck", "ineffassign", "gosec", "errorlint", "modernize"}
 	goListEntryRe    = regexp.MustCompile(`(?m)^\s*-\s*["']?([a-zA-Z0-9_-]+)["']?\b`)
 	goInlineListRe   = regexp.MustCompile(`(?m)["']?(disable|enable)["']?\s*[:=]\s*\[([^\]]*)\]`)
 	goDefaultNoneRe  = regexp.MustCompile(`(?i)\b(?:default\s*[:=]\s*["']?none["']?|disable-all\s*[:=]\s*true)\b`)
 	goDefaultAllRe   = regexp.MustCompile(`(?i)\b(?:default\s*[:=]\s*["']?all["']?|enable-all\s*[:=]\s*true)\b`)
+	goPresetsRe      = regexp.MustCompile(`(?im)^\s*["']?presets["']?\s*[:=]`)
 	goIdentTokenRe   = regexp.MustCompile(`[a-zA-Z0-9_-]+`)
 	pyRuffSelectRe   = regexp.MustCompile(`(?m)^\s*(?:extend-)?select\s*=\s*\[([^\]]*)\]`)
 	pyRuffIgnoreRe   = regexp.MustCompile(`(?m)^\s*(?:extend-)?ignore\s*=\s*\[([^\]]*)\]`)
@@ -258,7 +259,7 @@ func scanDoctorRepo(root string, excludes []string) (repoInventory, error) {
 			return
 		}
 		rel = filepath.ToSlash(rel)
-		if doctorExcluded(rel, excludes) {
+		if matchAnyGlob(excludes, rel) {
 			return
 		}
 		classifyDoctorFile(&inv, p, rel)
@@ -270,9 +271,14 @@ func scanDoctorRepo(root string, excludes []string) (repoInventory, error) {
 	return inv, nil
 }
 
-func doctorExcluded(rel string, excludes []string) bool {
-	for _, g := range excludes {
-		if matchGlob(g, rel) {
+func isExampleOrFixturePath(rel string) bool {
+	dir := strings.ToLower(path.Dir(rel))
+	if dir == "." {
+		return false
+	}
+	for seg := range strings.SplitSeq(dir, "/") {
+		switch seg {
+		case "testdata", "docs", "examples", "example", "fixtures":
 			return true
 		}
 	}
@@ -285,7 +291,9 @@ func classifyDoctorFile(inv *repoInventory, abs, rel string) {
 		inv.workflows = append(inv.workflows, rel)
 		return
 	}
-	recordDoctorConfig(inv, base, rel)
+	if !isExampleOrFixturePath(rel) {
+		recordDoctorConfig(inv, base, rel)
+	}
 	ext := extOf(rel)
 	switch ext {
 	case ".ts", ".tsx", ".mts", ".cts":
@@ -443,7 +451,7 @@ func findWeakTSCoreRule(text string) string {
 		if _, isScoped := stripTSRulePrefix(name); !isScoped && scopedErr[name] {
 			continue
 		}
-		return strings.TrimSpace(m[0])
+		return fmt.Sprintf("%s: %s", name, sev)
 	}
 	return ""
 }
@@ -505,10 +513,11 @@ func auditGoConfigFile(root, rel string) []DoctorFinding {
 	disabled, enabled := parseGoLinterLists(cleaned)
 	defaultNone := goDefaultNoneRe.MatchString(cleaned)
 	defaultAll := goDefaultAllRe.MatchString(cleaned)
+	usesPresets := goPresetsRe.MatchString(cleaned)
 
 	var missingCore []string
 	for _, name := range goCoreLinters {
-		if disabled[name] || (defaultNone && !enabled[name]) {
+		if disabled[name] || (defaultNone && !enabled[name] && !usesPresets) {
 			missingCore = append(missingCore, name)
 		}
 	}
@@ -724,19 +733,83 @@ func auditCI(inv repoInventory, stacks []string) []DoctorFinding {
 	return out
 }
 
-// hasContinueOnErrorLinter checks per YAML step block so an adjacent step's flag cannot bleed over.
+// hasContinueOnErrorLinter checks per step and per job header so unrelated steps cannot bleed over.
 func hasContinueOnErrorLinter(text string) bool {
 	if !ciContinueErrRe.MatchString(text) {
 		return false
 	}
 	for _, step := range splitWorkflowSteps(text) {
-		if !ciContinueErrRe.MatchString(step) {
+		if ciContinueErrRe.MatchString(step) && matchesAnyCILinter(step) {
+			return true
+		}
+	}
+	return hasJobContinueOnErrorLinter(text)
+}
+
+func matchesAnyCILinter(s string) bool {
+	for _, re := range ciLinterCmdRe {
+		if re.MatchString(s) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasJobContinueOnErrorLinter(text string) bool {
+	for _, job := range splitWorkflowJobs(text) {
+		if jobHasHeaderContinueOnError(job) && matchesAnyCILinter(job) {
+			return true
+		}
+	}
+	return false
+}
+
+func splitWorkflowJobs(text string) []string {
+	var jobs, cur []string
+	inJobs, jobIndent := false, -1
+	for line := range strings.SplitSeq(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
-		for _, re := range ciLinterCmdRe {
-			if re.MatchString(step) {
-				return true
+		indent := len(line) - len(strings.TrimLeft(line, " \t"))
+		if !inJobs {
+			inJobs = indent == 0 && trimmed == "jobs:"
+			continue
+		}
+		if indent == 0 {
+			break
+		}
+		if isJobHeaderLine(trimmed, indent, jobIndent) {
+			if len(cur) > 0 {
+				jobs = append(jobs, strings.Join(cur, "\n"))
 			}
+			cur, jobIndent = []string{line}, indent
+			continue
+		}
+		cur = append(cur, line)
+	}
+	if len(cur) > 0 {
+		jobs = append(jobs, strings.Join(cur, "\n"))
+	}
+	return jobs
+}
+
+func isJobHeaderLine(trimmed string, indent, jobIndent int) bool {
+	return (jobIndent < 0 || indent == jobIndent) && strings.HasSuffix(trimmed, ":") && !strings.HasPrefix(trimmed, "-")
+}
+
+func jobHasHeaderContinueOnError(job string) bool {
+	stepsIndent := -1
+	for line := range strings.SplitSeq(job, "\n") {
+		trimmed := strings.TrimSpace(line)
+		indent := len(line) - len(strings.TrimLeft(line, " \t"))
+		if trimmed == "steps:" && stepsIndent < 0 {
+			stepsIndent = indent
+			continue
+		}
+		if (stepsIndent < 0 || indent <= stepsIndent) && ciContinueErrRe.MatchString(line) {
+			return true
 		}
 	}
 	return false

@@ -47,11 +47,12 @@ Use `lintdec --list-rules` to see rules, `lintdec --rules flakey-test,md-prose-l
 
 ```sh
 lintdec doctor .
+lintdec doctor --exclude 'vendor/**' .
 lintdec doctor --fix .          # writes hardened configs & diff-gated CI using a chat LLM
 lintdec doctor --fix --dry-run .
 ```
 
-`lintdec doctor` runs locally with zero model calls to audit TS/JS (ESLint/Oxlint/Biome + `tsconfig`), Go (`golangci-lint`), Python (Ruff + Mypy/Pyright), Shell (`shellcheck`), suppression hygiene, and GitHub Actions CI wiring. With `--fix`, it uses a configured chat (`openai`-protocol) model to generate or harden linter configs and diff-gated CI workflows directly on disk (restricted strictly to linter/typechecker configs and `.github/workflows/*.y*ml`).
+`lintdec doctor` runs locally with zero model calls to audit TS/JS (ESLint/Oxlint/Biome + `tsconfig`), Go (`golangci-lint`), Python (Ruff + Mypy/Pyright), Shell (`shellcheck`), suppression hygiene, and GitHub Actions CI wiring (honoring `--exclude` and `lintdec.yaml` excludes). With `--fix`, it uses a configured chat (`openai`-protocol) model to generate or harden standalone linter/typechecker configs and diff-gated `.github/workflows/*.y*ml` directly on disk after pre-write validation, refusing shared manifests such as `pyproject.toml`, `tsconfig*.json`, and `lintdec.yaml`.
 
 ## Project policy: lintdec.yaml
 
