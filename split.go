@@ -54,7 +54,8 @@ func isLintConfig(filePath string) bool {
 	return lintConfigNames[strings.ToLower(path.Base(p))]
 }
 
-var tomlSectionHeaderRe = regexp.MustCompile(`^\[{1,2}\s*([A-Za-z0-9_.-]+)\s*\]{1,2}(?:\s*#.*)?$`)
+// Matches bare/dotted TOML table headers with optional quoted subtable segments (unescaped quotes).
+var tomlSectionHeaderRe = regexp.MustCompile(`^\[{1,2}\s*([A-Za-z0-9_-]+(?:\s*\.\s*(?:[A-Za-z0-9_-]+|"[^"\n]+"|'[^'\n]+'))*)\s*\]{1,2}(?:\s*#.*)?$`)
 
 func pyprojectToolSection(line string) (string, bool) {
 	m := tomlSectionHeaderRe.FindStringSubmatch(strings.TrimSpace(line))
