@@ -9,6 +9,7 @@ on:
 permissions:
   contents: read
 
+# Timeouts mirror lintdec.yaml (roughly 3x slowest expected run).
 jobs:
   golangci-lint:
     runs-on: ubuntu-latest
@@ -24,13 +25,14 @@ jobs:
         if: github.event_name == 'pull_request'
         uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          version: v2.15.0
           args: --new-from-merge-base=origin/${{ github.base_ref }}
+      # PRs squash-merge into main, so HEAD~1 covers the merged change.
       - name: Run golangci-lint (push)
         if: github.event_name == 'push'
         uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          version: v2.15.0
           args: --new-from-rev=HEAD~1
 
   oxlint-and-workflows:
@@ -41,7 +43,8 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+      # The runner's preinstalled Node provides npx; editors/vscode has no npm dependencies.
       - name: Lint VS Code extension JS with Oxlint
-        run: npx --yes oxlint --max-warnings 0 editors/vscode
+        run: npx --yes oxlint@1.95.0 --config .oxlintrc.json --max-warnings 0 editors/vscode
       - name: Lint GitHub Actions workflows with actionlint
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12

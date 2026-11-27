@@ -24,6 +24,15 @@ linters:
     - nolintlint
 
   settings:
+    errcheck:
+      # Terminal/stderr prints are unhandleable in this CLI; keep Close/file writes checked.
+      exclude-functions:
+        - fmt.Print
+        - fmt.Printf
+        - fmt.Println
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
     govet:
       enable-all: true
       disable:
