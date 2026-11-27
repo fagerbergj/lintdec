@@ -204,18 +204,18 @@ func applyDoctorFix(ctx context.Context, root string, rep DoctorReport, ep endpo
 	if err != nil {
 		return DoctorFixResult{}, err
 	}
-	validations, err := preValidateDoctorPlan(root, plan.Files)
+	kept, validations, err := preValidateDoctorPlan(root, plan.Files)
 	if err != nil {
 		return DoctorFixResult{}, err
 	}
 	res := DoctorFixResult{Summary: plan.Summary, Cost: costStr, Validations: validations}
 	if dryRun {
-		for _, f := range plan.Files {
+		for _, f := range kept {
 			res.Planned = append(res.Planned, path.Clean(strings.ReplaceAll(f.Path, "\\", "/")))
 		}
 		return res, nil
 	}
-	for _, f := range plan.Files {
+	for _, f := range kept {
 		clean := path.Clean(strings.ReplaceAll(f.Path, "\\", "/"))
 		full := filepath.Join(root, filepath.FromSlash(clean))
 		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
@@ -229,28 +229,39 @@ func applyDoctorFix(ctx context.Context, root string, rep DoctorReport, ep endpo
 	return res, nil
 }
 
-func preValidateDoctorPlan(root string, files []DoctorFixFile) ([]DoctorValidation, error) {
+func preValidateDoctorPlan(root string, files []DoctorFixFile) ([]DoctorFixFile, []DoctorValidation, error) {
+	var kept []DoctorFixFile
 	var validations []DoctorValidation
+	var skippedErr error
 	for _, f := range files {
 		if !isDoctorWritablePath(f.Path) {
-			return nil, fmt.Errorf("doctor --fix refused path %q: not allowed (only standalone linter/typechecker configs and CI workflows may be modified)", f.Path)
+			return nil, nil, fmt.Errorf("doctor --fix refused path %q: not allowed (only standalone linter/typechecker configs and CI workflows may be modified)", f.Path)
 		}
 		if strings.TrimSpace(f.Content) == "" {
-			return nil, fmt.Errorf("doctor --fix refused empty content for %q", f.Path)
+			return nil, nil, fmt.Errorf("doctor --fix refused empty content for %q", f.Path)
 		}
 		clean := path.Clean(strings.ReplaceAll(f.Path, "\\", "/"))
 		if err := verifyContainment(root, clean); err != nil {
-			return nil, fmt.Errorf("doctor --fix refused path %q: %w", clean, err)
+			return nil, nil, fmt.Errorf("doctor --fix refused path %q: %w", clean, err)
 		}
 		status, err := validateDoctorContent(root, clean, []byte(f.Content))
 		if err != nil {
-			return nil, fmt.Errorf("doctor --fix validation failed for %q (no files written): %w", clean, err)
+			if strings.HasPrefix(clean, ".github/workflows/") {
+				skippedErr = err
+				validations = append(validations, DoctorValidation{Path: clean, Status: "skipped: " + err.Error()})
+				continue
+			}
+			return nil, nil, fmt.Errorf("doctor --fix validation failed for %q (no files written): %w", clean, err)
 		}
 		if status != "" {
 			validations = append(validations, DoctorValidation{Path: clean, Status: status})
 		}
+		kept = append(kept, f)
 	}
-	return validations, nil
+	if len(kept) == 0 && skippedErr != nil {
+		return nil, nil, fmt.Errorf("doctor --fix validation failed (no files written): %w", skippedErr)
+	}
+	return kept, validations, nil
 }
 
 // verifyContainment rejects symlink targets or symlinked parent dirs that resolve outside root.

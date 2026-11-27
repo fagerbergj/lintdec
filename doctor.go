@@ -59,6 +59,7 @@ type repoInventory struct {
 	pyCount      int
 	shellCount   int
 	configs      map[string][]string
+	manifests    map[string]bool
 	workflows    []string
 	suppressions map[string]int
 }
@@ -76,7 +77,7 @@ var (
 	goInlineListRe   = regexp.MustCompile(`(?m)["']?(disable|enable)["']?\s*[:=]\s*\[([^\]]*)\]`)
 	goDefaultNoneRe  = regexp.MustCompile(`(?i)\b(?:default\s*[:=]\s*["']?none["']?|disable-all\s*[:=]\s*true)\b`)
 	goDefaultAllRe   = regexp.MustCompile(`(?i)\b(?:default\s*[:=]\s*["']?all["']?|enable-all\s*[:=]\s*true)\b`)
-	goPresetsRe      = regexp.MustCompile(`(?im)^\s*["']?presets["']?\s*[:=]`)
+	goPresetsRe      = regexp.MustCompile(`(?i)(?:^|[\s,{])["']?presets["']?\s*[:=]`)
 	goIdentTokenRe   = regexp.MustCompile(`[a-zA-Z0-9_-]+`)
 	pyRuffSelectRe   = regexp.MustCompile(`(?m)^\s*(?:extend-)?select\s*=\s*\[([^\]]*)\]`)
 	pyRuffIgnoreRe   = regexp.MustCompile(`(?m)^\s*(?:extend-)?ignore\s*=\s*\[([^\]]*)\]`)
@@ -251,6 +252,7 @@ func scanDoctorRepo(root string, excludes []string) (repoInventory, error) {
 	inv := repoInventory{
 		root:         root,
 		configs:      map[string][]string{},
+		manifests:    map[string]bool{},
 		suppressions: map[string]int{},
 	}
 	walkRoot(root, func(p string) {
@@ -264,11 +266,45 @@ func scanDoctorRepo(root string, excludes []string) (repoInventory, error) {
 		}
 		classifyDoctorFile(&inv, p, rel)
 	})
-	for k := range inv.configs {
-		slices.Sort(inv.configs[k])
-	}
+	pruneFixtureConfigs(&inv)
 	slices.Sort(inv.workflows)
 	return inv, nil
+}
+
+func pruneFixtureConfigs(inv *repoInventory) {
+	for k, list := range inv.configs {
+		var kept []string
+		for _, rel := range list {
+			if !fixtureScoped(rel, inv.manifests) {
+				kept = append(kept, rel)
+			}
+		}
+		if len(kept) == 0 {
+			delete(inv.configs, k)
+		} else {
+			slices.Sort(kept)
+			inv.configs[k] = kept
+		}
+	}
+	if len(inv.configs["tsconfig"]) > 0 {
+		inv.hasTS, inv.tsManifest = true, true
+	}
+	if len(inv.configs["python_lint"]) > 0 || len(inv.configs["python_type"]) > 0 {
+		inv.pyManifest = true
+	}
+}
+
+// fixtureScoped drops configs under docs/examples/testdata/fixtures unless that subtree declares a manifest.
+func fixtureScoped(rel string, manifests map[string]bool) bool {
+	if !isExampleOrFixturePath(rel) {
+		return false
+	}
+	for dir := path.Dir(rel); dir != "." && dir != "/"; dir = path.Dir(dir) {
+		if manifests[dir] && isExampleOrFixturePath(dir+"/x") {
+			return false
+		}
+	}
+	return true
 }
 
 func isExampleOrFixturePath(rel string) bool {
@@ -291,9 +327,7 @@ func classifyDoctorFile(inv *repoInventory, abs, rel string) {
 		inv.workflows = append(inv.workflows, rel)
 		return
 	}
-	if !isExampleOrFixturePath(rel) {
-		recordDoctorConfig(inv, base, rel)
-	}
+	recordDoctorConfig(inv, base, rel)
 	ext := extOf(rel)
 	switch ext {
 	case ".ts", ".tsx", ".mts", ".cts":
@@ -328,33 +362,41 @@ func isTSLinterConfig(base string) bool {
 		base == "biome.json" || base == "biome.jsonc"
 }
 
+func isTSConfigFile(base string) bool {
+	return strings.HasPrefix(base, "tsconfig") && strings.HasSuffix(base, ".json")
+}
+
 func isPythonManifest(base string) bool {
 	return base == "pyproject.toml" || base == "setup.py" || base == "setup.cfg" || strings.HasPrefix(base, "requirements")
+}
+
+func isPythonTypeConfig(base string) bool {
+	return base == "mypy.ini" || base == ".mypy.ini" || base == "pyrightconfig.json"
 }
 
 func recordDoctorConfig(inv *repoInventory, base, rel string) {
 	switch {
 	case base == "package.json":
 		inv.tsManifest = true
-	case strings.HasPrefix(base, "tsconfig") && strings.HasSuffix(base, ".json"):
-		inv.hasTS, inv.tsManifest = true, true
+		inv.manifests[path.Dir(rel)] = true
+	case isTSConfigFile(base):
 		inv.configs["tsconfig"] = append(inv.configs["tsconfig"], rel)
 	case isTSLinterConfig(base):
 		inv.configs["ts"] = append(inv.configs["ts"], rel)
 	case base == "go.mod":
 		inv.goManifest = true
+		inv.manifests[path.Dir(rel)] = true
 	case strings.HasPrefix(base, ".golangci."):
 		inv.configs["go"] = append(inv.configs["go"], rel)
 	case base == "ruff.toml" || base == ".ruff.toml":
-		inv.pyManifest = true
 		inv.configs["python_lint"] = append(inv.configs["python_lint"], rel)
 	case isPythonManifest(base):
 		inv.pyManifest = true
+		inv.manifests[path.Dir(rel)] = true
 		if base == "pyproject.toml" {
 			inv.configs["pyproject"] = append(inv.configs["pyproject"], rel)
 		}
-	case base == "mypy.ini" || base == ".mypy.ini" || base == "pyrightconfig.json":
-		inv.pyManifest = true
+	case isPythonTypeConfig(base):
 		inv.configs["python_type"] = append(inv.configs["python_type"], rel)
 	case base == ".shellcheckrc":
 		inv.configs["shell"] = append(inv.configs["shell"], rel)
@@ -513,6 +555,7 @@ func auditGoConfigFile(root, rel string) []DoctorFinding {
 	disabled, enabled := parseGoLinterLists(cleaned)
 	defaultNone := goDefaultNoneRe.MatchString(cleaned)
 	defaultAll := goDefaultAllRe.MatchString(cleaned)
+	// Skip inferred disables when presets are used since preset contents vary by version; explicit disable: still fires.
 	usesPresets := goPresetsRe.MatchString(cleaned)
 
 	var missingCore []string

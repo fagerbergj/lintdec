@@ -582,3 +582,78 @@ func TestDoctorFixRefusesSymlinkEscape(t *testing.T) {
 		t.Fatalf("expected normal root file to pass containment: %v", err)
 	}
 }
+
+func TestDoctorRound3Fixes(t *testing.T) {
+	// 1. Subtrees under docs/ or examples/ that declare their own stack manifest are audited
+	//    normally (not dropped as fixtures), and flow-style YAML presets match goPresetsRe.
+	dir := t.TempDir()
+	writeTestFiles(t, dir, map[string]string{
+		"go.mod":                      "module example.com/flow\n",
+		"main.go":                     "package main\nfunc main() {}\n",
+		".golangci.yml":               `version: "2"` + "\n" + `linters: {default: none, presets: [bugs], enable: [nolintlint]}` + "\n",
+		"apps/docs/package.json":      `{"name":"docs"}`,
+		"apps/docs/.eslintrc.json":    `{"rules":{}}`,
+		"apps/docs/tsconfig.json":     `{"compilerOptions":{"strict":true}}`,
+		"apps/docs/a.ts":              "export const a = 1;\n",
+		"apps/docs/b.ts":              "export const b = 2;\n",
+		"apps/docs/c.ts":              "export const c = 3;\n",
+		"examples/app/pyproject.toml": "[tool.ruff.lint]\nselect = [\"E\",\"F\",\"B\",\"SIM\",\"FURB\",\"UP\",\"RUF100\"]\n[tool.mypy]\nstrict = true\n",
+		"examples/app/a.py":           "x = 1\n",
+		"examples/app/b.py":           "y = 2\n",
+		"examples/app/c.py":           "z = 3\n",
+		".github/workflows/ci.yml": `jobs:
+  lint:
+    steps:
+      - run: golangci-lint run
+      - run: npm run lint
+      - run: ruff check .
+`,
+	})
+	rep, err := runDoctorAudit(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Findings) != 0 {
+		t.Fatalf("expected 0 findings for manifested docs/examples projects and flow presets, got: %+v", rep.Findings)
+	}
+
+	// 2. Workflow guard trip drops only the offending workflow and still writes valid configs.
+	fixDir := t.TempDir()
+	writeTestFiles(t, fixDir, map[string]string{
+		"go.mod":  "module example.com/partial\n",
+		"main.go": "package main\nfunc main() {}\n",
+	})
+	plan := `{"summary":"go config + workflow","files":[
+		{"path":".shellcheckrc","content":"enable=all\n"},
+		{"path":".github/workflows/lint.yml","content":"on: push\njobs:\n  lint:\n    steps:\n      - run: curl -sSfL https://example.com/install.sh | sh\n"}
+	]}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"message": map[string]any{"content": plan}}},
+		})
+	}))
+	defer srv.Close()
+
+	ep := endpoint{BaseURL: srv.URL, Protocol: "openai", Model: "test-model"}
+	fixRep, _ := runDoctorAudit(fixDir)
+	res, err := applyDoctorFix(context.Background(), fixDir, fixRep, ep, 0, false)
+	if err != nil {
+		t.Fatalf("expected valid config to write while workflow guard skips workflow, got err: %v", err)
+	}
+	if len(res.Written) != 1 || res.Written[0] != ".shellcheckrc" {
+		t.Fatalf("expected only .shellcheckrc written, got %+v", res.Written)
+	}
+	if _, err := os.Stat(filepath.Join(fixDir, ".github/workflows/lint.yml")); !os.IsNotExist(err) {
+		t.Fatal("skipped workflow must not be written")
+	}
+	foundSkip := false
+	for _, v := range res.Validations {
+		if v.Path == ".github/workflows/lint.yml" && strings.Contains(v.Status, "skipped:") {
+			foundSkip = true
+		}
+	}
+	if !foundSkip {
+		t.Fatalf("expected skipped workflow validation entry, got %+v", res.Validations)
+	}
+}
