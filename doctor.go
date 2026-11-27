@@ -257,7 +257,7 @@ func scanDoctorRepo(root string, excludes []string) (repoInventory, error) {
 		srcDirs:      map[string]bool{},
 		suppressions: map[string]int{},
 	}
-	walkRoot(root, func(p string) {
+	walkRootOpts(root, true, func(p string) {
 		rel, err := filepath.Rel(root, p)
 		if err != nil {
 			return
@@ -629,7 +629,7 @@ func auditGoConfigFile(root, rel string) []DoctorFinding {
 		out = append(out, DoctorFinding{
 			Stack: "go", ID: "go-disabled-core-linters", Severity: "error", File: rel,
 			Message: fmt.Sprintf("core Go linters disabled: %s", strings.Join(missingCore, ", ")),
-			FixHint: "re-enable core linters and gate CI with golangci-lint run --new-from-rev=origin/main",
+			FixHint: "re-enable core linters and gate CI with golangci-lint run --new-from-merge-base=origin/main",
 		})
 	}
 	nolintOn := (defaultAll && !disabled["nolintlint"]) || enabled["nolintlint"]
@@ -716,7 +716,7 @@ func auditPython(inv repoInventory) []DoctorFinding {
 			Message: "no Python typechecker config found (mypy or pyright)",
 			FixHint: `add mypy.ini with strict = true or pyrightconfig.json with typeCheckingMode = "standard"`,
 		})
-	} else if pyTypeWeakRe.MatchString(typeText) {
+	} else if isPythonTypeConfigWeak(typeText) {
 		out = append(out, DoctorFinding{
 			Stack: "python", ID: "py-typechecker-weak", Severity: "warning", File: typeFile,
 			Message: "Python typechecker is weakened (basic/off mode or strict = false)",
@@ -724,6 +724,27 @@ func auditPython(inv repoInventory) []DoctorFinding {
 		})
 	}
 	return out
+}
+
+// isPythonTypeConfigWeak ignores per-module mypy override blocks ([mypy-foo.*], [[tool.mypy.overrides]])
+// since per-module ignore_errors is mypy's documented baselining mechanism.
+func isPythonTypeConfigWeak(text string) bool {
+	inScopedOverride := false
+	for line := range strings.SplitSeq(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, ";") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			low := strings.ToLower(trimmed)
+			inScopedOverride = strings.HasPrefix(low, "[mypy-") || low == "[[tool.mypy.overrides]]"
+			continue
+		}
+		if !inScopedOverride && pyTypeWeakRe.MatchString(trimmed) {
+			return true
+		}
+	}
+	return false
 }
 
 func readPythonConfigs(inv repoInventory) (ruffFile, ruffText string, hasType bool, typeFile, typeText string) {

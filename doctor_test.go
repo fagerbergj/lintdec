@@ -676,3 +676,61 @@ func TestDoctorRound3Fixes(t *testing.T) {
 		t.Fatalf("fixture manifests without sources must not add stacks/findings; got stacks=%v findings=%+v", noSrcRep.Stacks, noSrcRep.Findings)
 	}
 }
+
+func TestDoctorDogfoodFixes(t *testing.T) {
+	// 1. Explicit git worktree root (.git file) is audited, while nested worktrees stay skipped.
+	wtDir := t.TempDir()
+	writeTestFiles(t, wtDir, map[string]string{
+		".git":        "gitdir: /tmp/nonexistent-main/.git/worktrees/wt\n",
+		"go.mod":      "module example.com/wt\n",
+		"main.go":     "package main\nfunc main() {}\n",
+		"nested/.git": "gitdir: /tmp/nonexistent-main/.git/worktrees/sub\n",
+		"nested/a.py": "x = 1\n",
+		"nested/b.py": "y = 2\n",
+		"nested/c.py": "z = 3\n",
+	})
+	wtRep, err := runDoctorAudit(wtDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(wtRep.Stacks) != 1 || wtRep.Stacks[0] != "go" {
+		t.Fatalf("expected root worktree to detect only [go] and skip nested worktree, got %v", wtRep.Stacks)
+	}
+
+	// 2. Per-module mypy ignore_errors overrides are allowed; global ignore_errors is still flagged.
+	if isPythonTypeConfigWeak("[mypy]\nstrict = True\n[mypy-*.tests.*]\nignore_errors = True\n") {
+		t.Fatal("per-module [mypy-*.tests.*] ignore_errors should not be flagged as globally weak")
+	}
+	if isPythonTypeConfigWeak("[tool.mypy]\nstrict = true\n[[tool.mypy.overrides]]\nmodule = \"legacy.*\"\nignore_errors = true\n") {
+		t.Fatal("[[tool.mypy.overrides]] ignore_errors should not be flagged as globally weak")
+	}
+	if !isPythonTypeConfigWeak("[mypy]\nignore_errors = True\n") {
+		t.Fatal("global [mypy] ignore_errors = True must be flagged")
+	}
+
+	// 3. Misplaced reportUnusedDisableDirectives inside ESLint rules: is rejected pre-write.
+	badESLint := []byte(`export default [{ rules: { "reportUnusedDisableDirectives": "error" } }];`)
+	if _, err := defaultValidateDoctorContent(wtDir, "eslint.config.mjs", badESLint); err == nil || !strings.Contains(err.Error(), "linterOptions") {
+		t.Fatalf("expected misplaced reportUnusedDisableDirectives error, got %v", err)
+	}
+
+	// 4. Workflow referencing steps.<id>.outputs without writing to $GITHUB_OUTPUT is rejected.
+	badWF := []byte("on: [pull_request]\njobs:\n  lint:\n    steps:\n      - id: diff\n        run: echo hi\n      - if: steps.diff.outputs.files != ''\n        run: ruff check .\n")
+	if _, err := validateWorkflowContent(badWF); err == nil || !strings.Contains(err.Error(), "GITHUB_OUTPUT") {
+		t.Fatalf("expected missing GITHUB_OUTPUT workflow guard error, got %v", err)
+	}
+	goodWF := []byte("on: [pull_request]\njobs:\n  lint:\n    steps:\n      - id: diff\n        run: echo 'files=a.py' >> \"$GITHUB_OUTPUT\"\n      - if: steps.diff.outputs.files != ''\n        run: ruff check .\n")
+	if _, err := validateWorkflowContent(goodWF); err != nil {
+		t.Fatalf("expected valid GITHUB_OUTPUT workflow to pass, got %v", err)
+	}
+
+	// 5. buildDoctorFixPrompt includes root package.json scripts/dependencies summary.
+	pkgDir := t.TempDir()
+	writeTestFiles(t, pkgDir, map[string]string{
+		"package.json": `{"name":"demo","scripts":{"test":"vitest"},"devDependencies":{"typescript":"^5"}}`,
+	})
+	prompt := buildDoctorFixPrompt(pkgDir, DoctorReport{Stacks: []string{"ts"}})
+	if !strings.Contains(prompt, "ROOT PACKAGE.JSON SUMMARY") || !strings.Contains(prompt, "typescript") {
+		t.Fatalf("expected package.json summary in prompt, got:\n%s", prompt)
+	}
+}

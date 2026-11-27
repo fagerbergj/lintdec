@@ -41,15 +41,15 @@ type doctorFixPlan struct {
 }
 
 const doctorFixSystemPrompt = `You are an expert static-analysis engineer configuring deterministic linters and CI workflows.
-Given a repository's detected stacks, doctor audit findings, and existing linter/CI config files, output ONLY a single JSON object (no markdown fences, no commentary):
+Given a repository's detected stacks, doctor audit findings, package.json dependency summary, and existing linter/CI config files, output ONLY a single JSON object (no markdown fences, no commentary):
 {"summary": "<1-sentence summary>", "files": [{"path": "<relative path>", "content": "<complete file content>"}]}
 
 Rules:
 1. Emit ONLY standalone linter/typechecker configs (.golangci.yml, eslint.config.mjs, .oxlintrc.json, biome.json, ruff.toml, mypy.ini, pyrightconfig.json, .shellcheckrc) and GitHub Actions workflows (.github/workflows/*.yml). NEVER emit shared project manifests (pyproject.toml, tsconfig.json, package.json, lintdec.yaml) or application source code.
-2. Put Python Ruff settings in ruff.toml and Mypy/Pyright settings in mypy.ini or pyrightconfig.json so existing pyproject.toml packaging metadata is never overwritten.
-3. Default to ratcheting / diff-gating in CI so strict rules enforce immediately on new/changed code without breaking legacy debt (e.g. golangci-lint run --new-from-rev=origin/main, ruff/eslint/oxlint/shellcheck on git diff changed files).
-4. Enable correctness and anti-slop rules (errcheck, gosec, staticcheck, errorlint, modernize, nolintlint for Go; B, SIM, FURB, UP, RUF100 + strict mypy/pyright for Python; no-floating-promises, reportUnusedDisableDirectives, require-description for TS/JS; shellcheck for Shell). Never mask failures with || true or continue-on-error: true.
-5. In GitHub Actions workflows, compute changed files with plain git diff (never third-party changed-files actions), prefer official setup/linter actions (e.g. golangci/golangci-lint-action) over curl/wget | sh, never use pull_request_target or permissions: write-all, and read language versions from project manifests (e.g. go-version-file: go.mod).
+2. For TS/JS: if eslint is NOT listed in package.json dependencies/devDependencies, emit .oxlintrc.json (zero-dependency Oxlint) instead of eslint.config.* with uninstalled imports. When editing an existing ESLint flat config, place reportUnusedDisableDirectives: "error" inside linterOptions (NEVER inside rules), and never reference plugins not installed in package.json.
+3. For Go: emit v2 .golangci.yml (version: "2", run.timeout: 5m, relative-path-mode: gomod, linters.default: standard plus bodyclose/copyloopvar/errorlint/gocritic/gosec/makezero/modernize/nilerr/nilnesserr/nilnil/noctx/nolintlint, govet enable-all minus fieldalignment, exclusions generated: strict / warn-unused: true / presets: [], issues max-issues-per-linter: 0 / max-same-issues: 0 / uniq-by-line: false) and run golangci/golangci-lint-action@v9 with --new-from-merge-base=origin/${{ github.base_ref }}.
+4. For Python and Shell: put Ruff in ruff.toml (extend-select = ["E", "F", "I", "B", "UP", "SIM", "FURB", "RUF"], ignore = ["E501"]), Mypy in mypy.ini (strict = True, warn_unused_configs = True, warn_redundant_casts = True, warn_unused_ignores = True, strict_equality = True), and ShellCheck in .shellcheckrc (external-sources=true, source-path=SCRIPTDIR; never blanket-disable SC2086).
+5. For CI workflows: prefer adding a dedicated .github/workflows/lint.yml over modifying existing release/deploy workflows; NEVER downgrade an existing passing whole-tree lint command to diff-only (tighten with --max-warnings 0); compute changed files inline with bash mapfile -t files < <(git diff --name-only --diff-filter=ACMR ...) instead of steps.*.outputs.* indirection; prefer official actions over curl/wget | sh; never use pull_request_target, permissions: write-all, || true, or continue-on-error: true; and read language versions from manifests (e.g. go-version-file: go.mod).
 6. Do not rewrite any existing file that was marked omitted or truncated in the prompt.`
 
 // doctorSharedManifests carry build, dependency, or policy settings alongside lint config;
@@ -63,9 +63,11 @@ var doctorExtraWritable = map[string]bool{
 }
 
 var (
-	unsafeWorkflowTargetRe = regexp.MustCompile(`(?i)\bpull_request_target\b`)
-	unsafeWorkflowPermRe   = regexp.MustCompile(`(?i)\bpermissions\s*:\s*write-all\b`)
-	unsafeWorkflowPipeRe   = regexp.MustCompile(`(?i)\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+)?(?:ba|da|z)?sh\b`)
+	unsafeWorkflowTargetRe     = regexp.MustCompile(`(?i)\bpull_request_target\b`)
+	unsafeWorkflowPermRe       = regexp.MustCompile(`(?i)\bpermissions\s*:\s*write-all\b`)
+	unsafeWorkflowPipeRe       = regexp.MustCompile(`(?i)\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+)?(?:ba|da|z)?sh\b`)
+	workflowStepOutputRefRe    = regexp.MustCompile(`\bsteps\.[a-zA-Z0-9_-]+\.outputs\.[a-zA-Z0-9_-]+`)
+	eslintMisplacedLinterOptRe = regexp.MustCompile(`(?s)\brules\s*:\s*\{[^}]*['"]?reportUnusedDisableDirectives['"]?\s*:`)
 )
 
 func cleanSafeRelPath(rel string) (string, bool) {
@@ -155,6 +157,7 @@ func buildDoctorFixPrompt(root string, rep DoctorReport) string {
 	for _, f := range rep.Findings {
 		fmt.Fprintf(&sb, "- [%s] %s (%s): %s | hint: %s\n", f.Severity, f.ID, f.File, f.Message, f.FixHint)
 	}
+	appendPackageJSONSummary(&sb, root)
 	existing := collectExistingConfigPaths(rep)
 	if len(existing) == 0 {
 		return sb.String()
@@ -183,6 +186,36 @@ func buildDoctorFixPrompt(root string, rep DoctorReport) string {
 		fmt.Fprintf(&sb, "\nOMITTED DUE TO BUDGET (do not rewrite): %s\n", strings.Join(omitted, ", "))
 	}
 	return sb.String()
+}
+
+func appendPackageJSONSummary(sb *strings.Builder, root string) {
+	b, ok := readSmallFile(filepath.Join(root, "package.json"))
+	if !ok {
+		return
+	}
+	var pkg struct {
+		Scripts         map[string]string `json:"scripts"`
+		Dependencies    map[string]string `json:"dependencies"`
+		DevDependencies map[string]string `json:"devDependencies"`
+	}
+	if err := json.Unmarshal(b, &pkg); err != nil {
+		return
+	}
+	var deps []string
+	for k := range pkg.Dependencies {
+		deps = append(deps, k)
+	}
+	for k := range pkg.DevDependencies {
+		deps = append(deps, k)
+	}
+	slices.Sort(deps)
+	var scripts []string
+	for k := range pkg.Scripts {
+		scripts = append(scripts, k)
+	}
+	slices.Sort(scripts)
+	fmt.Fprintf(sb, "\nROOT PACKAGE.JSON SUMMARY (do not modify package.json):\nscripts: %s\ndependencies: %s\n",
+		strings.Join(scripts, ", "), strings.Join(deps, ", "))
 }
 
 func collectExistingConfigPaths(rep DoctorReport) []string {
@@ -365,15 +398,35 @@ func defaultValidateDoctorContent(root, rel string, content []byte) (string, err
 		}
 		return "json valid", nil
 	case strings.HasPrefix(base, ".golangci."):
-		return validateWithTempFile(root, base, content, "golangci-lint", func(tmp string) []string {
-			return []string{"config", "verify", "--config", tmp}
-		})
+		return validateGolangciConfig(root, base, content)
 	case base == "eslint.config.js" || base == "eslint.config.mjs" || base == "eslint.config.cjs":
+		if eslintMisplacedLinterOptRe.Match(content) {
+			return "", errors.New("reportUnusedDisableDirectives must be in linterOptions, not inside rules")
+		}
 		return validateWithTempFile(root, base, content, "node", func(tmp string) []string {
 			return []string{"--check", tmp}
 		})
 	}
 	return "", nil
+}
+
+func validateGolangciConfig(root, base string, content []byte) (string, error) {
+	status, err := validateWithTempFile(root, base, content, "golangci-lint", func(tmp string) []string {
+		return []string{"config", "verify", "--config", tmp}
+	})
+	if err == nil || !strings.Contains(err.Error(), "used to build golangci-lint is lower") {
+		return status, err
+	}
+	// Host golangci-lint is older than go.mod; validate schema against a neutral synthetic go.mod.
+	tmpDir, mkErr := os.MkdirTemp("", "lintdec-golangci-schema-*")
+	if mkErr != nil {
+		return "skipped (golangci-lint Go version mismatch)", nil
+	}
+	defer os.RemoveAll(tmpDir)
+	_ = os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte("module lintdecverify\n\ngo 1.24\n"), 0o600)
+	return validateWithTempFile(tmpDir, base, content, "golangci-lint", func(tmp string) []string {
+		return []string{"config", "verify", "--config", tmp}
+	})
 }
 
 // validateWorkflowContent is a guardrail against common workflow footguns, not a security sandbox;
@@ -391,6 +444,9 @@ func validateWorkflowContent(content []byte) (string, error) {
 	}
 	if !strings.Contains(text, "jobs:") {
 		return "", errors.New("workflow missing jobs: section")
+	}
+	if workflowStepOutputRefRe.MatchString(text) && !strings.Contains(text, "GITHUB_OUTPUT") {
+		return "", errors.New("workflow references steps.<id>.outputs without writing to $GITHUB_OUTPUT")
 	}
 	return "workflow guard ok", nil
 }
