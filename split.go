@@ -33,12 +33,17 @@ var lintConfigNames = map[string]bool{
 	"eslint.config.js": true, "eslint.config.mjs": true, "eslint.config.cjs": true, "eslint.config.ts": true,
 	".eslintrc": true, ".eslintrc.json": true, ".eslintrc.js": true, ".eslintrc.cjs": true, ".eslintrc.yml": true, ".eslintrc.yaml": true,
 	"biome.json": true, "biome.jsonc": true,
-	"ruff.toml": true, ".ruff.toml": true,
+	"ruff.toml": true, ".ruff.toml": true, "pyproject.toml": true,
 	".golangci.yml": true, ".golangci.yaml": true, ".golangci.toml": true, ".golangci.json": true,
 	".rubocop.yml": true, ".rubocop.yaml": true,
 	"lintdec.yaml": true, "lintdec.yml": true,
 	"clippy.toml": true, ".clippy.toml": true,
 	".shellcheckrc": true,
+}
+
+var pyprojectLintTools = map[string]bool{
+	"ruff": true, "mypy": true, "pyright": true, "pylint": true,
+	"flake8": true, "bandit": true, "codespell": true, "pytest": true,
 }
 
 func isLintConfig(filePath string) bool {
@@ -49,10 +54,86 @@ func isLintConfig(filePath string) bool {
 	return lintConfigNames[strings.ToLower(path.Base(p))]
 }
 
+func pyprojectToolSection(line string) (string, bool) {
+	t := strings.TrimSpace(line)
+	if !strings.HasPrefix(t, "[") {
+		return "", false
+	}
+	t = strings.TrimLeft(t, "[")
+	if i := strings.IndexByte(t, ']'); i >= 0 {
+		return strings.TrimSpace(t[:i]), true
+	}
+	return "", false
+}
+
+func isPyprojectLintTool(section string) bool {
+	rest, ok := strings.CutPrefix(strings.ToLower(section), "tool.")
+	if !ok {
+		return false
+	}
+	name, _, _ := strings.Cut(rest, ".")
+	return pyprojectLintTools[name]
+}
+
+// pyprojectLintUnit extracts only linter/typechecker [tool.*] sections from pyproject.toml.
+func pyprojectLintUnit(filePath string, src []byte) (Unit, bool) {
+	lines := strings.Split(strings.TrimRight(string(src), "\n"), "\n")
+	var kept []string
+	inTool := false
+	first, last := 0, 0
+	for i, line := range lines {
+		if sec, ok := pyprojectToolSection(line); ok {
+			inTool = isPyprojectLintTool(sec)
+		}
+		if !inTool {
+			continue
+		}
+		if first == 0 {
+			first = i + 1
+		}
+		last = i + 1
+		kept = append(kept, line)
+	}
+	text := strings.TrimSpace(strings.Join(kept, "\n"))
+	if text == "" {
+		return Unit{}, false
+	}
+	return Unit{Kind: "LintConfig", File: filePath, Start: first, End: last, Text: text}, true
+}
+
+var generatedBannerRe = regexp.MustCompile(`(?i)(?:code generated.*do not edit|automatically generated|auto-?generated|\bdo not edit\b|@generated\b)`)
+
+// isGeneratedFile reports whether the leading comment header declares the file auto-generated.
+func isGeneratedFile(src []byte) bool {
+	limit := min(len(src), 2048)
+	checked := 0
+	for line := range strings.SplitSeq(string(src[:limit]), "\n") {
+		t := strings.TrimSpace(line)
+		if t == "" {
+			continue
+		}
+		checked++
+		if checked > 15 {
+			break
+		}
+		isComment := strings.HasPrefix(t, "//") || strings.HasPrefix(t, "/*") || strings.HasPrefix(t, "*") || strings.HasPrefix(t, "#")
+		if isComment && generatedBannerRe.MatchString(t) {
+			return true
+		}
+	}
+	return false
+}
+
 func splitFile(filePath string, src []byte) []Unit {
 	ext := extOf(filePath)
 	var units []Unit
 	if isLintConfig(filePath) {
+		if strings.EqualFold(path.Base(strings.ReplaceAll(filePath, "\\", "/")), "pyproject.toml") {
+			if u, ok := pyprojectLintUnit(filePath, src); ok {
+				return []Unit{u}
+			}
+			return nil
+		}
 		if text := strings.TrimRight(string(src), "\n"); strings.TrimSpace(text) != "" {
 			units = append(units, Unit{Kind: "LintConfig", File: filePath, Start: 1, End: strings.Count(text, "\n") + 1, Text: text})
 		}
@@ -63,15 +144,24 @@ func splitFile(filePath string, src []byte) []Unit {
 		return units
 	}
 	switch ext {
-	case ".go":
-		return attachTestHelpers(splitGo(filePath, src))
 	case ".md", ".markdown":
 		return splitMarkdown(filePath, src)
+	case ".go":
+		if isGeneratedFile(src) {
+			return nil
+		}
+		return attachTestHelpers(splitGo(filePath, src))
 	}
 	if key, ok := tsExt[ext]; ok {
+		if isGeneratedFile(src) {
+			return nil
+		}
 		return attachTestHelpers(splitTree(filePath, src, tsLangs[key]))
 	}
 	if ext == "" && isShellShebang(src) {
+		if isGeneratedFile(src) {
+			return nil
+		}
 		return attachTestHelpers(splitTree(filePath, src, tsLangs["sh"]))
 	}
 	return nil

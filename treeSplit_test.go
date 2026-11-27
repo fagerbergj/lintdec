@@ -527,3 +527,72 @@ func TestShellShebangDetectionAndExtensionlessCollect(t *testing.T) {
 		t.Fatalf("exclude **/*.sh should keep app.go: %q", joinedExcl)
 	}
 }
+
+func TestSplitTreePythonDecoratedAndJSHooks(t *testing.T) {
+	pySrc := `import pytest
+
+@pytest.mark.skip(reason="broken")
+def test_skipped():
+    """Docstring stays attached."""
+    assert True
+
+@patch("pkg.fetch")
+def test_patched(mock_fetch):
+    mock_fetch.return_value = 1
+`
+	pyUnits := splitTree("test_sample.py", []byte(pySrc), tsLangs["py"])
+	var pyTests []Unit
+	for _, u := range pyUnits {
+		if u.Kind == "TestFunction" {
+			pyTests = append(pyTests, u)
+		}
+	}
+	if len(pyTests) != 2 {
+		t.Fatalf("want 2 decorated TestFunction units, got %d: %+v", len(pyTests), pyTests)
+	}
+	if !strings.Contains(pyTests[0].Text, "@pytest.mark.skip") || pyTests[0].Context != "Docstring stays attached." {
+		t.Errorf("decorated python test lost decorator or docstring: %+v", pyTests[0])
+	}
+	if !strings.Contains(pyTests[1].Text, "@patch") {
+		t.Errorf("patched python test lost @patch decorator: %+v", pyTests[1])
+	}
+
+	jsSrc := `afterEach(() => {
+  delete process.env.NO_PROXY;
+});
+
+describe('suite', () => {
+  afterEach(() => {
+    resetInner();
+  });
+
+  // Tracked in #42: flaky on CI
+  it.skip('first', () => {
+    process.env.NO_PROXY = '*';
+  });
+});
+
+it('outer', () => {
+  process.env.NO_PROXY = '*';
+});
+`
+	jsUnits := splitTree("sample.test.ts", []byte(jsSrc), tsLangs["ts"])
+	var jsTests []Unit
+	for _, u := range jsUnits {
+		if u.Kind == "TestFunction" {
+			jsTests = append(jsTests, u)
+		}
+	}
+	if len(jsTests) != 2 {
+		t.Fatalf("want 2 JS TestFunction units, got %d", len(jsTests))
+	}
+	if !strings.Contains(jsTests[0].Context, "Tracked in #42") {
+		t.Errorf("preceding comment above it.skip not attached: %q", jsTests[0].Context)
+	}
+	if !strings.Contains(jsTests[0].Context, "delete process.env.NO_PROXY") || !strings.Contains(jsTests[0].Context, "resetInner()") {
+		t.Errorf("inner test missing enclosing afterEach hooks: %q", jsTests[0].Context)
+	}
+	if !strings.Contains(jsTests[1].Context, "delete process.env.NO_PROXY") || strings.Contains(jsTests[1].Context, "resetInner()") {
+		t.Errorf("outer test should see only file-level afterEach, got: %q", jsTests[1].Context)
+	}
+}

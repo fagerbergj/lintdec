@@ -141,3 +141,21 @@ Rebalanced the rule set from `15/45` default-on (`33%`) to `26/33` default-on (`
   - `iface-god-method`: 4/4 false positives on React `interface Props` in `games` (`0.846–0.969`, no veto), 0 real catches across 500 audited files.
   - `md-hidden-verb` (892 decisions across 4 repos, 0 above-floor catches in 500-file audit), `md-restates` (0.06% rate across 1,588 units), `md-prose-table` (0.19% rate), `md-one-topic` (0.17% rate), `md-marketing` (0 real hits), `md-howto-digression` (noisy on README/overview sections), `md-heading-promise` (noisy on terse ops headings), `md-noun-as-verb` (0 hits, too rare to measure), `md-topic-sentence` (0 above-floor hits), `md-step-not-command` (~60% FP on non-procedural lists without veto), and `comment-excuse` (0.18% rate, overlaps `todo-no-owner` and `comment-hedge`).
 - **Remaining opt-in (`defaultOff`, 7 rules):** high-cost unfiltered code checks (`swallowed-error`, `incomplete-assertion`, `name-mismatch`, `stub-body`, `file-several-jobs`) plus repo-specific style checks (`comment-history`, `md-two-names`).
+
+## OSS corpus hill-climbing (Clef-only, local read-only)
+
+Evaluated default-on rules locally on Clef (`--protocol systemone --model clef --workers 1`, zero external PRs) across 3 compact AI-heavy/vibe-coded repos (`browser-use`, `nanoclaw`, `picoclaw`) and 2 mature baselines (`httpx`, `axios`):
+
+- **Round 1** (7 rules: `lint-config-weakened`, `hand-rolled-stdlib`, `unbounded-retry`, `suppression-no-reason`, `test-ignored-no-reason`, `md-no-remediation`, `md-one-sided-alternatives`; 1,248 checks / 1,450 requests / 19m25s):
+  - High-value true positives: `nanoclaw` 17/17 hand-rolled `parseArgs`/`parseFlags` functions (`hand-rolled-stdlib`) + infinite `for (;;)` SQLite retry loop (`src/state-sqlite.ts`, `unbounded-retry`); `picoclaw` `.golangci.yaml` disabling `errcheck`/`gosec`/`staticcheck` with `# TODO` (`lint-config-weakened`, `0.960`, veto `0.092`) + 3/3 unconditionally skipped dead tests out of 55 `t.Skip` calls (`test-ignored-no-reason`); real bare suppressions across all 5 repos.
+  - Mature baselines (`httpx`, `axios`): 0 FPs on `hand-rolled-stdlib`, `unbounded-retry`, `test-ignored-no-reason`, `md-no-remediation`, `md-one-sided-alternatives`, `lint-config-weakened`.
+- **Round 2** (`test-shared-state`, `test-over-mocked` on `httpx`, `axios`, `browser-use`; 313 checks / 347 requests / 3m04s):
+  - `test-over-mocked`: 0/99 FPs on `httpx` + `axios`.
+  - `test-shared-state`: 16/16 FPs on `axios` (`afterEach` cleanup hooks discarded by `splitTree`) and 129 wasted calls / 1 FP on `browser-use` (`monkeypatch.setenv` matched by `testSharedStateRe`).
+- **Fixes verified live on Clef (before → after):**
+  - Attach JS/TS `afterEach`/`beforeEach`/`afterAll`/`beforeAll` hooks to enclosing `TestFunction.Context` + exempt pure loopback URL helpers: `axios` `test-shared-state` FPs **16 → 0** (16 checks, 9s).
+  - Drop `monkeypatch.setenv` from `testSharedStateRe` + unwrap Python `decorated_definition` (`@pytest.mark.skip`, `@pytest.mark.skipif`, `@patch`) + match `skipif`/`pytest.skip`: `browser-use` `test-shared-state` + `test-ignored-no-reason` checks **129 → 64**, FPs **1 → 0**, Python skip decorators now extracted.
+  - Skip generated source files (`isGeneratedFile` header banner check): `picoclaw/web/frontend/src/routeTree.gen.ts` **1 → 0**.
+  - Extract `[tool.<linter>]` sections from `pyproject.toml` for `LintConfig`: `browser-use/pyproject.toml` now scores `0.642` (veto `0.115`) vs. strict `httpx/pyproject.toml` `0.116` (veto `0.354`).
+  - Unwrap JS/TS `expression_statement` for `TestFunction` doc attachment: comments directly above `it.skip(...)` now reach `Context` (`nanoclaw` `integration.test.ts` drops `0.918 → 0.092` once its 7-line `// SKIPPED:` rationale is visible).
+  - Exempt runtime feature-detection stdlib fallbacks (`hand-rolled-stdlib`: `picoclaw` `generateSessionId` **1 → 0**, `nanoclaw` `register.ts` TP holds at `0.850`), API/architecture error reference tables (`md-no-remediation`: `picoclaw` `subturn.md` **1 → 0**), and test error-expectation blocks (`suppression-no-reason`: `httpx` test hits **21 → 13** while keeping **15/15** prod hits).
