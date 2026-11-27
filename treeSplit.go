@@ -155,7 +155,7 @@ func splitTree(filePath string, src []byte, cfg tsCfg) []Unit {
 				continue
 			}
 			if hookNode := unwrapHookCall(c, cfg, src); hookNode != nil {
-				hooks = append(hooks, makeTestHook(n, hookNode, src))
+				hooks = append(hooks, makeTestHook(n, c, hookNode, src))
 				continue
 			}
 			if textNode, declNode, kind := unwrapUnitNode(c, cfg, src); kind != "" {
@@ -394,17 +394,26 @@ type testHook struct {
 	text       string
 }
 
-func makeTestHook(parent, hook *sitter.Node, src []byte) testHook {
+func makeTestHook(parent, stmt, hook *sitter.Node, src []byte) testHook {
 	start := int(hook.StartPoint().Row) + 1
 	rawLines := strings.Split(hook.Content(src), "\n")
 	if len(rawLines) > maxTestHookLines {
 		rawLines = append(rawLines[:maxTestHookLines], "...")
 	}
+	text := numberedLines(strings.Join(rawLines, "\n"), start)
+	lineCount := len(rawLines)
+	if prev := stmt.PrevSibling(); prev != nil && strings.Contains(prev.Type(), "comment") && prev.EndPoint().Row+1 == stmt.StartPoint().Row {
+		if doc, docStart := docRun(prev, src); doc != "" {
+			docLines := strings.Split(doc, "\n")
+			text = numberedLines(doc, docStart) + "\n" + text
+			lineCount += len(docLines)
+		}
+	}
 	return testHook{
 		scopeStart: int(parent.StartPoint().Row) + 1,
 		scopeEnd:   int(parent.EndPoint().Row) + 1,
-		lines:      len(rawLines),
-		text:       numberedLines(strings.Join(rawLines, "\n"), start),
+		lines:      lineCount,
+		text:       text,
 	}
 }
 

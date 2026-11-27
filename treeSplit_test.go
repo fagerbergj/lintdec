@@ -557,7 +557,8 @@ def test_patched(mock_fetch):
 		t.Errorf("patched python test lost @patch decorator: %+v", pyTests[1])
 	}
 
-	jsSrc := `afterEach(() => {
+	jsSrc := `// reset env between tests
+afterEach(() => {
   delete process.env.NO_PROXY;
 });
 
@@ -589,7 +590,7 @@ it('outer', () => {
 	if !strings.Contains(jsTests[0].Context, "Tracked in #42") {
 		t.Errorf("preceding comment above it.skip not attached: %q", jsTests[0].Context)
 	}
-	if !strings.Contains(jsTests[0].Context, "LIFECYCLE HOOKS IN THIS FILE:") || !strings.Contains(jsTests[0].Context, "delete process.env.NO_PROXY") || !strings.Contains(jsTests[0].Context, "resetInner()") {
+	if !strings.Contains(jsTests[0].Context, "LIFECYCLE HOOKS IN THIS FILE:") || !strings.Contains(jsTests[0].Context, "reset env between tests") || !strings.Contains(jsTests[0].Context, "delete process.env.NO_PROXY") || !strings.Contains(jsTests[0].Context, "resetInner()") {
 		t.Errorf("inner test missing labeled enclosing afterEach hooks: %q", jsTests[0].Context)
 	}
 	if !strings.Contains(jsTests[1].Context, "delete process.env.NO_PROXY") || strings.Contains(jsTests[1].Context, "resetInner()") {
