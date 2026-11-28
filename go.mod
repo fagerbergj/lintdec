@@ -9,7 +9,7 @@ require (
 	github.com/charmbracelet/colorprofile v0.4.2
 	github.com/charmbracelet/x/ansi v0.11.6
 	github.com/coreos/go-oidc/v3 v3.21.0
-	github.com/go-jose/go-jose/v4 v4.1.4
+	github.com/go-jose/go-jose/v4 v4.1.9
 	github.com/gofrs/flock v0.13.2
 	github.com/jdkato/prose/v2 v2.0.0
 	github.com/mattn/go-runewidth v0.0.20
